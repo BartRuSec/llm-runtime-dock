@@ -1,0 +1,18 @@
+node_modules/
+dist/
+*.tsbuildinfo
+coverage/
+.DS_Store
+
+# local agent state
+.claude/settings.local.json
+.opencode/node_modules/
+.opencode/package.json
+.opencode/package-lock.json
+.opencode/bun.lock
+
+# defensive
+.env*
+*.log
+.idea/
+.vscode/

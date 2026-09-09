@@ -1,0 +1,24 @@
+packages:
+  - 'packages/core'
+  - 'packages/cli'
+  - 'packages/runtimes/*'
+  - 'packages/agents/*'
+  - 'apps/*'
+
+# esbuild ships a prebuilt binary and runs a postinstall to place it; vitest
+# depends on it transitively.
+allowBuilds:
+  esbuild: true
+
+# Supply-chain cooldown: a compromised or broken release is typically caught
+# within days, so nothing enters the lockfile until it has survived two weeks
+# in the wild. Reintroduce `minimumReleaseAgeExclude` only deliberately, with a
+# comment saying why one specific version has to bypass it.
+minimumReleaseAge: 20160 # minutes = 14 days
+# Setting the age above turns this on implicitly; it is spelled out because the
+# opposite value silently rewrites this file. With `false`, pnpm stops failing
+# and instead auto-collects every too-new version into a `minimumReleaseAgeExclude`
+# list right here — which is exactly where the sixteen orphaned `@inquirer/*`
+# pins in the first commit came from. Leave it true: an install that hits the
+# cooldown must fail and be resolved by a person.
+minimumReleaseAgeStrict: true

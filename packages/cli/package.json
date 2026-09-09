@@ -1,0 +1,38 @@
+{
+  "name": "@llm-runtime-dock/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "rimraf dist",
+    "test": "vitest run"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@inquirer/prompts": "^8.6.0",
+    "@llm-runtime-dock/core": "workspace:*",
+    "@llm-runtime-dock/gateway": "workspace:*",
+    "commander": "^14.0.3",
+    "picocolors": "^1.1.1",
+    "yaml": "^2.6.1"
+  },
+  "devDependencies": {
+    "rimraf": "^6.0.1",
+    "vitest": "^4.1.11"
+  }
+}

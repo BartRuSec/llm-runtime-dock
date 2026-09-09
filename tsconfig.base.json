@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "types": ["node"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "exactOptionalPropertyTypes": false,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "incremental": true,
+    // Kept inside each package's own outDir so `clean` is a single directory
+    // removal, with no glob for a shell to expand — cmd.exe would not expand
+    // one. `${configDir}` (TypeScript 5.5+) makes this resolve against the
+    // package that extends this file rather than against this file itself,
+    // which would collide all 11 packages on one path.
+    "tsBuildInfoFile": "${configDir}/dist/.tsbuildinfo",
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  }
+}

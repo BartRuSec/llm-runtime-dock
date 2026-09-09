@@ -1,0 +1,231 @@
+# llm-runtime-dock — example configuration
+#
+# Copy to ~/.config/llm-runtime-dock/config.yaml and edit.
+# Check it with:  lrd doctor --config examples/config.yaml
+#
+# There are no secrets in this file and there never should be. An upstream
+# credential is referenced by environment variable through a runtime's `auth:`
+# block; the gateway itself listens on loopback without authentication.
+
+server:
+  # Default bind. Lifecycle controls (/status, /switch) are loopback-only.
+  host: 127.0.0.1
+  port: 8787
+
+# The servers this machine can talk to. Everything that describes the *endpoint*
+# is a runtime field; everything that describes a *model* belongs in models:
+# below. That split is what makes two models on one server structurally unable
+# to disagree about it.
+runtimes:
+  # ---------------------------------------------------------------- MTPLX ---
+  # MTPLX serves one model per process, so freeing the resident slot means
+  # stopping the server: `mtplx stop --port 8001`.
+  #
+  # Not the adapter default of 8000: oMLX below defaults there too, and two
+  # servers cannot share a port.
+  mtplx:
+    adapter: mtplx
+    port: 8001
+
+  # A second MTPLX server, for the one model that stays loaded (see
+  # `summariser` below). Because MTPLX serves one model per process, a
+  # `keep_resident` entry has to own its runtime: any sibling entry could only
+  # be started by stopping this server, which would take the kept model with it.
+  # Validation refuses that config rather than letting the first switch discover
+  # it. On LM Studio or oMLX, which hold several models at once, no second
+  # runtime is needed.
+  mtplx-resident:
+    adapter: mtplx
+    port: 8002
+    # This server exists to hold one chosen model, so discovery has nothing to
+    # contribute: MTPLX's catalogue belongs to the installation, not to a port,
+    # so a probe would keep offering to add every other installed model here.
+    # `lrd probe` skips it entirely; `lrd probe mtplx-resident` still works.
+    discovery: false
+
+  # ------------------------------------------------------------ LM Studio ---
+  # `lms server start` runs one shared server; `lms load --identifier` adds a
+  # model to it and `lms unload` removes it. Releasing the slot is the unload:
+  # a normal model switch never stops the server, which the gateway does not own.
+  lmstudio:
+    adapter: lm-studio
+    port: 1234
+
+  # ----------------------------------------------------------------- oMLX ---
+  # oMLX is one server serving many models, loaded and unloaded through its
+  # documented HTTP endpoints (its CLI has no load/unload command at all).
+  # This one keeps the adapter default of 8000, which is why MTPLX above moved.
+  omlx:
+    adapter: omlx
+    port: 8000
+    options:
+      # Server-scoped options live here, once. They only take effect when the
+      # gateway spawns the server; `doctor` says so when it attaches instead.
+      model_dir: ~/models/omlx
+      memory_guard: balanced
+    auth:
+      # A variable name, never a value. Set OMLX_API_KEY in your shell.
+      api_key_env: OMLX_API_KEY
+
+  # --------------------------------------------------------------- Ollama ---
+  # Ollama serves the OpenAI surface and configures `serve` through environment
+  # variables. The gateway owns OLLAMA_HOST and keep_alive for residency.
+  ollama:
+    adapter: ollama
+    port: 11434
+    options:
+      context_length: 8192
+
+  # --------------------------------------------------------------- custom ---
+  # Any runtime the official adapters do not cover, described declaratively.
+  #
+  # SECURITY: the command is an argv array, used verbatim. Nothing derived from
+  # an HTTP request ever reaches it — request values are never interpolated into
+  # a lifecycle command. Prefer an argv array over a shell string; shell
+  # execution requires an explicit `shell: true` and is documented in the README.
+  legacy:
+    adapter: custom
+    process:
+      start:
+        command:
+          - some-runtime
+          - serve
+          - --model
+          - some-model-7b
+          - --port
+          - '8100'
+      stop:
+        command:
+          - some-runtime
+          - stop
+      cwd: /Users/me/models
+      env:
+        SOME_RUNTIME_LOG_LEVEL: info
+      startup_timeout_ms: 120000
+      shutdown_timeout_ms: 15000
+    health:
+      url: http://127.0.0.1:8100/health
+      timeout_ms: 5000
+    model_discovery:
+      url: http://127.0.0.1:8100/v1/models
+    endpoint:
+      url: http://127.0.0.1:8100/v1
+    # A custom runtime serves the OpenAI surface only unless it says otherwise:
+    # nothing about a user-defined command implies an Anthropic endpoint. Without
+    # this line, its models cannot fill a Claude Code role.
+    surfaces: [openai, anthropic]
+
+# One flat map of models. The key is the logical id a client sends and the
+# gateway advertises through /v1/models; `runtime:` names the server that
+# serves it. Only one model is resident in memory at a time, across every
+# runtime, so switching between entries starts and stops runtimes as needed —
+# unless an entry sets `keep_resident`, which `summariser` below does and
+# explains.
+models:
+  coding-quality:
+    runtime: mtplx
+    backend_model: Qwen3.8-27B
+    options:
+      # Quote on/off/yes/no. Some YAML parsers read them as booleans, and these
+      # runtimes expect the literal strings; validation rejects a boolean here
+      # rather than coercing it.
+      reasoning: 'on'
+      reasoning_effort: high
+      profile: turbo
+      # Context and output limits are start-time flags, not request rewriting.
+      # The gateway never injects them into an OpenAI request body.
+      context_window: 131072
+      max_tokens: 32768
+    # Raw argv escape hatch for flags the adapter does not name. Reserved
+    # arguments (--host, --port, --model, --model-id, --api-key…) are rejected
+    # here too, otherwise the escape hatch reintroduces the problem.
+    extra_args: [--batching-preset, agent]
+
+  # Same runtime as coding-quality. That is valid: only one model is resident at
+  # a time, so switching between them restarts the process with different flags.
+  # They are different runtime instances because their launch options differ.
+  coding-fast:
+    runtime: mtplx
+    backend_model: Qwen3.6-35B-A3B
+    options:
+      reasoning: 'off'
+      depth: 3
+      context_window: 131072
+
+  # `keep_resident` takes an entry out of the rotation: it is loaded on first
+  # use and not unloaded again for as long as the gateway runs, and switching
+  # to it does not evict whatever else is loaded. A small model an agent reaches for constantly — summaries,
+  # repo exploration — is the case it exists for: reloading a 27B for every
+  # two-line summary costs more than the summary.
+  #
+  # So `coding-quality` above stays in memory while this one answers, and
+  # comes back without a reload. Both sit in memory, but they still take turns
+  # answering, because they share one GPU: this buys no reloading, not
+  # parallelism. Nothing measures what it costs while it runs — that budget is
+  # yours, and `lrd doctor` warns if more than one entry is kept.
+  #
+  # Its lifetime is the gateway's: stopping `lrd serve` releases everything
+  # loaded, this entry included. Nothing else would be left to free the memory.
+  #
+  # Note the runtime: `mtplx-resident`, not `mtplx`. That is the whole reason
+  # it exists.
+  summariser:
+    runtime: mtplx-resident
+    backend_model: Qwen3.5-4B
+    keep_resident: true
+    options:
+      context_window: 131072
+
+  local-lmstudio:
+    runtime: lmstudio
+    backend_model: qwen2.5-coder-32b
+    options:
+      context_length: 131072
+      gpu: max
+
+  # `disabled: true` keeps an entry in this file and out of everything else: it
+  # is not advertised on /v1/models, a request naming it gets a 404, and
+  # `lrd apply` never writes it into a coding agent's configuration.
+  #
+  # For what a probe finds and a client should never ask for — embeddings, a
+  # sidecar the backend uses on its own, or simply a model that is installed and
+  # not wanted right now. Deleting the entry is not the same thing: the next
+  # `lrd probe --save` finds the model again and writes it straight back.
+  embeddings:
+    runtime: lmstudio
+    backend_model: nomic-embed-text-v1.5
+    disabled: true
+
+  # Both entries below share the oMLX runtime: the server is shared, the
+  # resident slot is not.
+  omlx-coder:
+    runtime: omlx
+    backend_model: Ornith-1.5-35B-A3B-oQ6e-fixed-mtp
+
+  omlx-small:
+    runtime: omlx
+    backend_model: llama-3b
+
+  # Ollama model ids may include their tag; discovery and YAML preserve it.
+  ollama-coder:
+    runtime: ollama
+    backend_model: llama3.2:latest
+
+  legacy-runtime:
+    runtime: legacy
+    backend_model: some-model-7b
+
+# Which model each coding agent should use, and in which role. This is what
+# `lrd apply` reads. Every value is a logical model id from models: above;
+# an unknown id fails validation, so a rename is caught by `lrd doctor`
+# rather than by a coding agent silently pointing at nothing.
+agents:
+  claude:
+    opus: coding-quality
+    sonnet: coding-quality
+    haiku: coding-fast
+  codex:
+    model: coding-quality
+    reasoning_effort: high
+  opencode:
+    default: coding-quality

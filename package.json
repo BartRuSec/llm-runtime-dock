@@ -1,0 +1,86 @@
+{
+  "name": "llm-runtime-dock",
+  "version": "0.1.0",
+  "description": "Local OpenAI/Anthropic-compatible LLM gateway and runtime lifecycle manager",
+  "license": "MIT",
+  "author": "BartRuSec",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BartRuSec/llm-runtime-dock.git"
+  },
+  "homepage": "https://github.com/BartRuSec/llm-runtime-dock#readme",
+  "bugs": {
+    "url": "https://github.com/BartRuSec/llm-runtime-dock/issues"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "packageManager": "pnpm@11.15.1",
+  "bin": {
+    "lrd": "./bin/lrd.mjs"
+  },
+  "files": [
+    "dist/index.js",
+    "bin"
+  ],
+  "keywords": [
+    "llm",
+    "gateway",
+    "llm-gateway",
+    "ai-gateway",
+    "openai",
+    "openai-compatible",
+    "anthropic",
+    "llm-router",
+    "llm-proxy",
+    "llm-orchestration",
+    "model-switching",
+    "local-llm",
+    "mlx",
+    "mtplx",
+    "omlx",
+    "lm-studio",
+    "ollama",
+    "coding-agents"
+  ],
+  "scripts": {
+    "build": "node scripts/sync-version.mjs && pnpm -r run build && node scripts/bundle.mjs",
+    "bundle": "node scripts/bundle.mjs",
+    "version:sync": "node scripts/sync-version.mjs",
+    "prepack": "pnpm run build",
+    "dev": "node scripts/dev.mjs",
+    "clean": "pnpm -r run clean && rimraf dist",
+    "typecheck": "node scripts/sync-version.mjs --check && pnpm -r run typecheck && tsc -p tsconfig.json",
+    "test": "pnpm run build && pnpm -r run test && vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test:unit": "pnpm -r run test",
+    "test:e2e": "vitest run"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@llm-runtime-dock/adapter-custom": "workspace:*",
+    "@llm-runtime-dock/adapter-lm-studio": "workspace:*",
+    "@llm-runtime-dock/adapter-mtplx": "workspace:*",
+    "@llm-runtime-dock/adapter-omlx": "workspace:*",
+    "@llm-runtime-dock/adapter-ollama": "workspace:*",
+    "@llm-runtime-dock/agent-claude": "workspace:*",
+    "@llm-runtime-dock/agent-codex": "workspace:*",
+    "@llm-runtime-dock/agent-opencode": "workspace:*",
+    "@llm-runtime-dock/cli": "workspace:*",
+    "@llm-runtime-dock/core": "workspace:*",
+    "@llm-runtime-dock/gateway": "workspace:*",
+    "@types/node": "^24",
+    "esbuild": "^0.28.2",
+    "eslint": "^10.9.1",
+    "prettier": "^3.4.2",
+    "rimraf": "^6.0.1",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.18.1",
+    "vitest": "^4.1.11"
+  }
+}
