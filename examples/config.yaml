@@ -11,6 +11,16 @@ server:
   # Default bind. Lifecycle controls (/status, /switch) are loopback-only.
   host: 127.0.0.1
   port: 8787
+  # How long the gateway may sit with nothing to do before it unloads the model
+  # it is holding. Nothing else ever frees it: until the next switch, or until
+  # `lrd serve` stops, that model keeps its memory. Write it as 60m, 1h, 90s,
+  # 3600000ms or a bare number of milliseconds; 0 never unloads.
+  #
+  # A `keep_resident` entry (see `summariser` below) is not affected, and a
+  # single-model server the gateway attached to rather than started is left
+  # running — stopping someone else's server because this one went quiet is not
+  # its call.
+  idle_unload: 60m
 
 # The servers this machine can talk to. Everything that describes the *endpoint*
 # is a runtime field; everything that describes a *model* belongs in models:

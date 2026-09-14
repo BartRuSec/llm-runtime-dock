@@ -238,6 +238,7 @@ const printStatus = (context: CliContext, endpoint: string, status: GatewayStatu
     'state',
     'kept',
     'serving',
+    'released',
     'queue',
   ]);
   const line = (label: string, value: string, style?: (text: string) => string): void =>
@@ -263,6 +264,14 @@ const printStatus = (context: CliContext, endpoint: string, status: GatewayStatu
     line('state', status.resident.state, theme.state);
   } else {
     line('resident', 'none', theme.muted);
+    // `resident: none` alone cannot tell "nothing has been asked for yet" apart
+    // from "the idle timer unloaded what was there" (§26, §29).
+    if (status.lastRelease) {
+      line(
+        'released',
+        `${theme.id(status.lastRelease.modelId)} (${status.lastRelease.reason}, ${status.lastRelease.via})`,
+      );
+    }
   }
   // Where the rest of the memory went (§8, §26). One row can only speak for the
   // rotating occupant, and `keep_resident` puts other models alongside it.

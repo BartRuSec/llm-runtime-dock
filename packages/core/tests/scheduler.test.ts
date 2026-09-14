@@ -86,7 +86,11 @@ describe('resident slot', () => {
       'acquire:stub-b',
       'ready:stub-b',
     ]);
-    expect(scheduler.status().lastRelease).toEqual({ modelId: 'stub-a', via: 'stop_server' });
+    expect(scheduler.status().lastRelease).toEqual({
+      modelId: 'stub-a',
+      via: 'stop_server',
+      reason: 'switch',
+    });
   });
 
   it('switches across adapters, releasing with the occupant’s own mechanism', async () => {
@@ -99,7 +103,11 @@ describe('resident slot', () => {
     // target's; neither knows about the other.
     expect(stubs.multi!.calls).toContain('release:multi-a');
     expect(stubs.stub!.calls).toContain('acquire:stub-a');
-    expect(scheduler.status().lastRelease).toEqual({ modelId: 'multi-a', via: 'unload_model' });
+    expect(scheduler.status().lastRelease).toEqual({
+      modelId: 'multi-a',
+      via: 'unload_model',
+      reason: 'switch',
+    });
   });
 
   it('treats two entries on one adapter as separate slot occupants', async () => {
@@ -454,5 +462,228 @@ models:
     // told to spare it. `elsewhere` is a different server, whose ids mean
     // nothing there.
     expect(stub.keepLoaded).toEqual([[], ['kept-model'], []]);
+  });
+});
+
+/**
+ * Idle unload (spec §29).
+ *
+ * The scheduler is otherwise entirely request-driven, so this is the one thing
+ * in it that happens because time passed. Windows here are tens of milliseconds
+ * and the clock is real — the repository has no fake timers, and the timeout is
+ * injectable precisely so it does not need any.
+ */
+
+const idleHarness = (
+  yaml: string,
+  options: StubAdapterOptions = {},
+  idleUnloadMs = 60,
+): {
+  scheduler: ReturnType<typeof createScheduler>;
+  stub: StubAdapter;
+  model: (id: string) => RuntimeInstance;
+} => {
+  const stub = createStubAdapter({ ...options, id: 'stub' });
+  const registry = createAdapterRegistry([stub]);
+  const config = parseConfig(registry, yaml, testLocation());
+  const scheduler = createScheduler({ registry, logger, drainTimeoutMs: 2_000, idleUnloadMs });
+  return { scheduler, stub, model: (id: string): RuntimeInstance => config.models.get(id)! };
+};
+
+const TWO_ROTATING = `
+runtimes:
+  one: { adapter: stub, port: 9001 }
+  two: { adapter: stub, port: 9002 }
+models:
+  rot-a: { runtime: one, backend_model: model-a }
+  rot-b: { runtime: two, backend_model: model-b }
+`;
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Poll rather than guess how long a release took. */
+const waitFor = async (predicate: () => boolean, timeoutMs = 3_000): Promise<void> => {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (predicate()) return;
+    if (Date.now() >= deadline) throw new Error('timed out waiting for condition');
+    await sleep(5);
+  }
+};
+
+describe('idle unload', () => {
+  it('releases the rotating occupant after a quiet spell', async () => {
+    const { scheduler, stub, model } = idleHarness(TWO_ROTATING);
+    (await scheduler.acquire(model('rot-a'))).release();
+    expect(scheduler.status().resident?.modelId).toBe('rot-a');
+
+    await waitFor(() => scheduler.status().resident === null);
+    expect(stub.calls).toContain('release:rot-a');
+    expect(scheduler.status().lastRelease).toEqual({
+      modelId: 'rot-a',
+      via: 'stop_server',
+      reason: 'idle',
+    });
+    expect(scheduler.status().serving).toBeNull();
+  });
+
+  it('never touches a kept entry, because an idle window is not a shutdown', async () => {
+    const { scheduler, stub, model } = idleHarness(`
+runtimes:
+  small: { adapter: stub, port: 9001 }
+  big: { adapter: stub, port: 9002 }
+models:
+  kept: { runtime: small, backend_model: small-model, keep_resident: true }
+  big-a: { runtime: big, backend_model: big-model }
+`);
+    (await scheduler.acquire(model('kept'))).release();
+    (await scheduler.acquire(model('big-a'))).release();
+
+    // The occupant goes; `keep_resident` still means "for as long as the
+    // gateway runs".
+    await waitFor(() => scheduler.status().resident === null);
+    await sleep(200);
+    expect(stub.calls).not.toContain('release:kept');
+    expect(scheduler.status().kept.map((entry) => entry.modelId)).toEqual(['kept']);
+
+    await scheduler.shutdown();
+    expect(stub.calls).toContain('release:kept');
+  });
+
+  it('does not fire while a request is still holding the slot', async () => {
+    const { scheduler, stub, model } = idleHarness(TWO_ROTATING);
+    const lease = await scheduler.acquire(model('rot-a'));
+
+    await sleep(250);
+    expect(stub.calls).not.toContain('release:rot-a');
+    expect(scheduler.status().resident?.modelId).toBe('rot-a');
+
+    lease.release();
+    await waitFor(() => scheduler.status().resident === null);
+  });
+
+  it('restarts the window on every request', async () => {
+    const { scheduler, stub, model } = idleHarness(TWO_ROTATING, {}, 150);
+    (await scheduler.acquire(model('rot-a'))).release();
+    await sleep(100);
+    (await scheduler.acquire(model('rot-a'))).release();
+    await sleep(100);
+
+    // 200ms have passed but never 150 of them in a row.
+    expect(stub.calls).not.toContain('release:rot-a');
+    await waitFor(() => scheduler.status().resident === null);
+  });
+
+  it('arms even when the request that started the runtime was cancelled', async () => {
+    // The regression test for where the timer is armed. A client that vanishes
+    // mid-acquire is settled with a rejection and never increments the lease
+    // count, so nothing is ever released — arming from `lease.release()` would
+    // leave this runtime loaded for the life of the process.
+    const { scheduler, stub, model } = idleHarness(TWO_ROTATING, { acquireDelayMs: 120 });
+    const controller = new AbortController();
+    const pending = scheduler.acquire(model('rot-a'), { signal: controller.signal });
+    await sleep(20);
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ code: 'RUNTIME_SLOT_BUSY' });
+
+    // The runtime is deliberately left resident so the next request finds it warm.
+    expect(scheduler.status().resident?.modelId).toBe('rot-a');
+    await waitFor(() => scheduler.status().resident === null);
+    expect(stub.calls).toContain('release:rot-a');
+  });
+
+  it('leaves a foreign single-model server alone, and says so once', async () => {
+    const { scheduler, stub, model } = idleHarness(TWO_ROTATING, {
+      modelRelease: 'stop_server',
+      ownership: 'attached',
+    });
+    (await scheduler.acquire(model('rot-a'))).release();
+
+    await sleep(250);
+    // A switch would stop it — it has to, to free memory for the next model.
+    // Idle has nothing it needs the memory for.
+    expect(stub.calls).not.toContain('release:rot-a');
+    expect(scheduler.status().resident?.modelId).toBe('rot-a');
+  });
+
+  it('unloads from a shared server even when the gateway did not start it', async () => {
+    const { scheduler, stub, model } = idleHarness(TWO_ROTATING, {
+      modelRelease: 'unload_model',
+      ownership: 'attached',
+    });
+    (await scheduler.acquire(model('rot-a'))).release();
+
+    // The unload names one model; everyone else on that server is unaffected.
+    await waitFor(() => scheduler.status().resident === null);
+    expect(stub.calls).toContain('release:rot-a');
+  });
+
+  it('survives a release that fails, and tries again on the next window', async () => {
+    const { scheduler, stub, model } = idleHarness(TWO_ROTATING, {
+      failRelease: new Error('will not let go'),
+    });
+    (await scheduler.acquire(model('rot-a'))).release();
+
+    await waitFor(() => stub.calls.filter((call) => call === 'release:rot-a').length >= 2);
+    // Still loaded and still tracked: a runtime that will not let go is a real
+    // problem, but not one a timer callback may crash the gateway over.
+    expect(scheduler.status().resident?.modelId).toBe('rot-a');
+  });
+
+  it('serializes a request that arrives while the sweep is releasing', async () => {
+    const { scheduler, stub, model } = idleHarness(TWO_ROTATING, { releaseDelayMs: 200 });
+    (await scheduler.acquire(model('rot-a'))).release();
+    await waitFor(() => stub.calls.includes('release:rot-a'));
+
+    // Mid-release: the sweep holds the same lock the pump does, so this queues
+    // behind it rather than racing it into a second acquire/release cycle.
+    (await scheduler.acquire(model('rot-b'))).release();
+
+    expect(stub.calls).toEqual([
+      'acquire:rot-a',
+      'ready:rot-a',
+      'release:rot-a',
+      'acquire:rot-b',
+      'ready:rot-b',
+    ]);
+    expect(scheduler.status().resident?.modelId).toBe('rot-b');
+  });
+
+  it('does not release the same slot twice when shutdown lands mid-sweep', async () => {
+    // Shutdown does not take the pump's lock — until the idle timer existed,
+    // nothing in the scheduler ran without a request in flight, so there was
+    // nothing to take it from. This is the one window where both sides are
+    // freeing the same slot.
+    const { scheduler, stub, model } = idleHarness(TWO_ROTATING, { releaseDelayMs: 200 });
+    (await scheduler.acquire(model('rot-a'))).release();
+    await waitFor(() => stub.calls.includes('release:rot-a'));
+
+    await scheduler.shutdown();
+
+    expect(stub.calls.filter((call) => call === 'release:rot-a')).toHaveLength(1);
+    expect(scheduler.status().resident).toBeNull();
+    expect(scheduler.status().kept).toEqual([]);
+  });
+
+  it('leaves no timer behind after a shutdown', async () => {
+    const { scheduler, stub, model } = idleHarness(TWO_ROTATING);
+    (await scheduler.acquire(model('rot-a'))).release();
+
+    await scheduler.shutdown();
+    stub.calls.length = 0;
+    await sleep(250);
+
+    // Nothing is loaded, so a timer that survived would find nothing to free —
+    // but it would still be a timer firing against a scheduler that is done.
+    expect(stub.calls).toEqual([]);
+  });
+
+  it('does nothing at all when the window is zero', async () => {
+    const { scheduler, stub, model } = idleHarness(TWO_ROTATING, {}, 0);
+    (await scheduler.acquire(model('rot-a'))).release();
+
+    await sleep(250);
+    expect(stub.calls).not.toContain('release:rot-a');
+    expect(scheduler.status().resident?.modelId).toBe('rot-a');
   });
 });

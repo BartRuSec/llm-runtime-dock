@@ -54,6 +54,8 @@ export interface StubAdapterOptions {
   /** Make `release` reject, e.g. a pinned model that cannot be evicted. */
   readonly failRelease?: Error;
   readonly acquireDelayMs?: number;
+  /** Hold `release` open, so a test can land a request in the middle of one. */
+  readonly releaseDelayMs?: number;
   /** What `health` reports. `unreachable` is a runtime that is simply gone. */
   readonly healthState?: HealthStatus['state'];
   readonly ownership?: AcquireResult['ownership'];
@@ -114,6 +116,9 @@ export const createStubAdapter = (options: StubAdapterOptions = {}): StubAdapter
 
     release: async (runtime: RuntimeInstance): Promise<void> => {
       calls.push(`release:${runtime.id}`);
+      if (options.releaseDelayMs) {
+        await new Promise((resolve) => setTimeout(resolve, options.releaseDelayMs));
+      }
       if (options.failRelease) throw options.failRelease;
     },
 

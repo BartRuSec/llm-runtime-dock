@@ -105,7 +105,11 @@ models:
   });
 
   it('defaults the server to loopback', () => {
-    expect(load('models: {}').server).toEqual({ host: '127.0.0.1', port: 8787 });
+    expect(load('models: {}').server).toEqual({
+      host: '127.0.0.1',
+      port: 8787,
+      idleUnloadMs: 3_600_000,
+    });
   });
 
   it('reports the file it loaded', () => {
@@ -466,5 +470,59 @@ describe('disabled', () => {
       'CONFIG_INVALID',
     );
     expect(error.message).toContain('big');
+  });
+});
+
+/**
+ * `server.idle_unload` (spec §29).
+ *
+ * The one duration a person actually chooses, so it is the one that accepts a
+ * unit. Everything downstream sees milliseconds.
+ */
+describe('idle unload', () => {
+  it('defaults to an hour when the key is absent', () => {
+    expect(load(STUB).server.idleUnloadMs).toBe(3_600_000);
+  });
+
+  it.each([
+    ['60m', 3_600_000],
+    ['1h', 3_600_000],
+    ['90s', 90_000],
+    ['3600000ms', 3_600_000],
+    ['3600000', 3_600_000],
+    ['  30 m  ', 1_800_000],
+  ])('reads %s as %i ms', (written, expected) => {
+    expect(load(`server:\n  idle_unload: "${written}"\n${STUB}`).server.idleUnloadMs).toBe(
+      expected,
+    );
+  });
+
+  it('reads a bare number as milliseconds, like every other *_ms field', () => {
+    expect(load(`server:\n  idle_unload: 3600000\n${STUB}`).server.idleUnloadMs).toBe(3_600_000);
+  });
+
+  it('takes 0 as off', () => {
+    expect(load(`server:\n  idle_unload: 0\n${STUB}`).server.idleUnloadMs).toBe(0);
+  });
+
+  it.each(['forever', '5 fortnights', '-1', '1.5h', ''])(
+    'refuses %s, naming the key rather than the value',
+    (written) => {
+      const error = expectCliError(
+        () => load(`server:\n  idle_unload: "${written}"\n${STUB}`),
+        'CONFIG_INVALID',
+      );
+      expect(error.message).toContain('server.idle_unload');
+      expect(error.hint).toContain('0 disables');
+    },
+  );
+
+  it('refuses a negative or fractional number', () => {
+    expectCliError(() => load(`server:\n  idle_unload: -1\n${STUB}`), 'CONFIG_INVALID');
+    expectCliError(() => load(`server:\n  idle_unload: 1.5\n${STUB}`), 'CONFIG_INVALID');
+  });
+
+  it('refuses a type the schema cannot make sense of', () => {
+    expectCliError(() => load(`server:\n  idle_unload: []\n${STUB}`), 'CONFIG_INVALID');
   });
 });

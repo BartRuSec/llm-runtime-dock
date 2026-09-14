@@ -94,7 +94,7 @@ models:
     keep_resident: true
 ```
 
-Shutdown is the one place the flag stops applying: everything loaded is released, kept entries included, because nothing would be left to free the memory afterwards. A kept entry's lifetime is the gateway's, which is why the shutdown path's wait for in-flight requests is bounded rather than open-ended ([§27](10-cli.md#cli)) — a held stream must not be able to strand a model in memory.
+Shutdown is the one place the flag stops applying: everything loaded is released, kept entries included, because nothing would be left to free the memory afterwards. The idle timer ([§29](#memory--resource-policy)) is not a second such place — it frees the rotating occupant and leaves every kept entry exactly where it is. A kept entry's lifetime is the gateway's, which is why the shutdown path's wait for in-flight requests is bounded rather than open-ended ([§27](10-cli.md#cli)) — a held stream must not be able to strand a model in memory.
 
 #### Server ownership is decided at runtime
 
@@ -334,7 +334,8 @@ Minimal scheduler requirements:
 - deduplication of concurrent requests targeting the same entry id during startup;
 - release of the current occupant before acquiring the slot, including across adapters;
 - one serving token, moved between loaded entries without loading or releasing anything;
-- kept entries excluded from release on every path but shutdown ([§8](#lifecycle)).
+- kept entries excluded from release on every path but shutdown ([§8](#lifecycle));
+- release of the rotating occupant after an idle window, through the same queue rather than around it ([§29](#memory--resource-policy)).
 
 Example:
 
@@ -404,13 +405,29 @@ Do not introduce a telemetry platform.
 
 ## Memory / Resource Policy
 
-There is no GPU memory management, by design.
+There is no GPU memory _management_, by design. There is one reclaim rule, and it is about time rather than size.
 
 The memory policy is the resident slot ([§8](#lifecycle)): one model in memory at a time, released explicitly before the next is acquired. That is the default, and nothing infers its way out of it.
 
 `keep_resident` is the one documented way out, and it moves the budget to the user rather than adding a policy engine. An entry carrying it stays loaded, so the machine holds that model plus whichever one is rotating; the gateway does not measure, predict or reclaim the difference. It cannot — it does not know how large a model is until the runtime has loaded it, and by then the memory is already spent.
 
 What the gateway does instead is make the cost visible: `lrd status` lists the kept entries next to the occupant, and `doctor` warns when more than one entry is kept.
+
+#### Unloading after idle
+
+A model is loaded because a request asked for it. Nothing asks for it to be freed again: the scheduler is otherwise entirely request-driven, so a gateway that served one request at nine in the morning is still holding that model at midnight.
+
+`server.idle_unload` is the one thing in this system that happens because time passed. After that long with no request in flight and none queued, the scheduler releases the **rotating occupant** through the ordinary path — the same drain, the same `releaseRotating`, the same adapter call a switch would make. It defaults to an hour; `0` switches it off.
+
+Three limits define it, and each is the answer to a question the feature raises:
+
+- **It never touches a kept entry.** `keep_resident` means the entry's lifetime is the gateway's ([§8](#lifecycle)), and an idle window is not the gateway stopping. Shutdown remains the single place the flag stops applying.
+- **It will not stop a server the gateway only attached to.** For an `unload_model` runtime the question does not arise — the unload names one model and the shared server keeps serving everyone else, so the model is always released. For a `stop_server` runtime the only lever is the server itself, and a switch pulls it regardless of ownership because the one-resident invariant leaves it no choice ([§8](#lifecycle)). Idle has no such forcing function: nothing needs that memory. A foreign single-model server is therefore left loaded, logged once as `slot.idle_skipped`, and the timer stops arming against it.
+- **It is not a measurement.** It does not know or care how much memory was freed. It answers "is anyone using this", which the gateway can see, rather than "is this worth keeping", which it cannot.
+
+This is also the other half of a rule stated elsewhere. A runtime's own idle-unload flag — LM Studio's `--ttl`, Ollama's `OLLAMA_KEEP_ALIVE` — is a reserved argument ([§12](05-configuration.md#configuration)) because a model disappearing behind the gateway's back leaves its bookkeeping wrong. The rule was never "no idle unload". It was "the gateway owns that timer", and this is the gateway owning it.
+
+The release is reported as any other is ([§26](#observability)): `lastRelease` carries `reason: "idle"`, so `lrd status` can tell a gateway that unloaded something overnight apart from one that has never served a request.
 
 Future optional policy may include:
 
@@ -422,4 +439,4 @@ resources:
 
 This must be a policy layer, not tightly coupled to individual adapters.
 
-The implementation relies on explicit lifecycle switching, and nothing else.
+Beyond the idle window, the implementation relies on explicit lifecycle switching, and nothing else.

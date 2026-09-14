@@ -64,7 +64,7 @@ The one rename: the upstream's `x-request-id` is forwarded as `x-upstream-reques
 
 #### `/status` and `/switch`
 
-`GET /status` reports what the gateway is doing: whether it is running, which entry holds the resident slot, that entry's adapter, backend model, ownership and release mechanism, its state, and the queue depth. It is the source of truth for `lrd status` ([§27](10-cli.md#cli)).
+`GET /status` reports what the gateway is doing: whether it is running, which entry holds the resident slot, that entry's adapter, backend model, ownership and release mechanism, its state, and the queue depth. `lastRelease` carries the previous occupant, how it was freed, and **why** — `switch`, `idle` or `shutdown` ([§26](03-lifecycle.md#observability), [§29](03-lifecycle.md#memory--resource-policy)) — which is what lets a caller tell an empty slot that has never been filled apart from one an idle window emptied. It is the source of truth for `lrd status` ([§27](10-cli.md#cli)).
 
 `POST /switch` takes a logical model id and makes it resident.
 
