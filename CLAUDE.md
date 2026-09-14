@@ -8,6 +8,17 @@ indexes the specification and maps the `§N` numbers the code comments cite.
 `README.md` is the user-facing manual. This file records only what is not
 obvious from the code and is not already in `docs/`.
 
+## Branches
+
+`develop` is the default branch for all work; `main` carries releases only.
+
+- Branch from `develop` and open every pull request against it. A feature
+  branch off `main` is a mistake even when the two point at the same commit.
+- Nothing lands on `main` except a release merge from `develop` (plus the
+  version bump that goes with it — see Packaging).
+- `git clone` checks out whatever the remote's HEAD names, so a fresh clone may
+  land on `main`; `git switch develop` before the first commit.
+
 ## Commands
 
 `docs/02-architecture.md` has the full workflow. Two things that bite and are

@@ -13,6 +13,8 @@ truth:
   the code: the arrow-function and no-class rules ESLint enforces, the
   cross-platform rules, the packaging, dependency and version-generation rules,
   and the invariants that are easy to break. **Read it before editing any TypeScript.**
+  Its first section is the branch policy: work happens on `develop`, `main`
+  carries releases only — branch and open pull requests against `develop`.
 - **[`README.md`](README.md)** is the user-facing manual.
 
 ## Extending the project
