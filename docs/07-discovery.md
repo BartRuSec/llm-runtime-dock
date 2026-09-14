@@ -399,18 +399,34 @@ mtplx  http://127.0.0.1:8000  running, serving 1 model, 3 installed (mtplx)
 
 #### Models the runtime declares unusable
 
-A runtime may list a model it also says it cannot serve. MTPLX does: its cache
-records a `validation.ok` per entry, and a model without a valid runtime contract
-is present on disk but not servable.
-
-Discovery **skips those and reports why**, for the same reason it skips an unsafe
-id rather than rewriting it — an entry that cannot start is worse than no entry,
-because the failure surfaces at the first switch instead of at configuration
-time:
+A runtime may list a model it also says it cannot serve. Discovery **skips those
+and reports why**, for the same reason it skips an unsafe id rather than
+rewriting it — an entry that cannot start is worse than no entry, because the
+failure surfaces at the first switch instead of at configuration time:
 
 ```text
-skipped mtplx model id "ornith-ai/Ornith-1.5-35B-A3B": MTPLX reports no valid runtime contract for this model
+skipped mtplx model id "vendor/broken-pack": MTPLX reports no config.json in this model pack
 ```
+
+`unusable` means **the runtime will not load this**, and nothing weaker. Not
+"this will be slow", not "this is missing an optimisation" — an adapter that
+widens it to either of those hides working models behind a line that reads like
+a defect.
+
+MTPLX is where that distinction was learned the hard way. Its cache reports both
+a `validation.ok` and a `has_config` per entry, and only the second one answers
+the question. `validation.ok` is the **MTP runtime contract**: a pack without one
+has no speculative-decoding head, and MTPLX serves it target-only autoregressive
+instead — its launch gate is explicit that "verification tier stays a label; it
+must never block loading", and its compatibility pass flips `--generation-mode`
+to `ar` and loads the trunk. Reading `validation.ok` as servability is what made
+`lrd probe mtplx` skip two models the user was already serving by hand. So the
+adapter reads `has_config`, which MTPLX computes as `(dir / 'config.json')
+.exists()` — a directory with no `config.json` is not a model at all.
+
+That an entry will be slower belongs nowhere in this file: the runtime decides
+its own degraded mode at launch, so discovery neither annotates the entry nor
+writes an `options:` block to pre-empt it.
 
 #### Discovered names are untrusted input
 

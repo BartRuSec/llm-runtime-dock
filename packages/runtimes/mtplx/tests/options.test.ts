@@ -10,7 +10,12 @@ import {
   validateDiscoveredId,
 } from '@llm-runtime-dock/core';
 import type { CliError } from '@llm-runtime-dock/core';
-import type { AdapterProbeOutcome, ConfigLocation, ProcessExecutor } from '@llm-runtime-dock/core';
+import type {
+  AdapterProbeOutcome,
+  ConfigLocation,
+  DiscoveredModel,
+  ProcessExecutor,
+} from '@llm-runtime-dock/core';
 import { createMtplxAdapter, suggestLogicalId } from '../src/index.js';
 import {
   MTPLX_DEFAULT_OPTIONS,
@@ -236,28 +241,50 @@ const executorReturning = (stdout: string): ProcessExecutor => ({
 describe('mtplx adapter', () => {
   const adapter = createMtplxAdapter({ binary: 'mtplx' });
 
-  it('marks a cached model without a valid runtime contract as unusable', async () => {
-    // MTPLX validates its own cache; `ok: false` means it cannot serve the model.
+  /** Nothing listening, so the answer is "not running" plus the local cache. */
+  const cacheOf = async (models: unknown[]): Promise<DiscoveredModel[]> => {
     const probing = createMtplxAdapter({
       binary: 'mtplx',
-      executor: executorReturning(
-        JSON.stringify({
-          models: [
-            { repo_id: 'Vendor/Good-MTPLX', validation: { ok: true } },
-            { repo_id: 'vendor/no-contract', validation: { ok: false } },
-          ],
-        }),
-      ),
+      executor: executorReturning(JSON.stringify({ models })),
     });
-
-    // Nothing listening, so the answer is "not running" plus the local cache.
     const result = await probing.probe({ url: 'http://127.0.0.1:1', timeoutMs: 200 });
     expect(result.status).toBe('not_running');
-    const available = result.status === 'not_running' ? (result.available ?? []) : [];
+    return result.status === 'not_running' ? (result.available ?? []) : [];
+  };
+
+  it('discovers a model MTPLX reports without an MTP runtime contract', async () => {
+    // `validation.ok` is the MTP contract, not servability: MTPLX loads such a
+    // pack as target-only AR. Reading it as unusable hid two working models,
+    // which is the regression this asserts against.
+    const available = await cacheOf([
+      { repo_id: 'Vendor/Good-MTPLX', has_config: true, validation: { ok: true } },
+      { repo_id: 'vendor/no-mtp-contract', has_config: true, validation: { ok: false } },
+    ]);
+
     expect(available.map((m) => [m.id, m.unusable])).toEqual([
       ['Vendor/Good-MTPLX', undefined],
-      ['vendor/no-contract', 'MTPLX reports no valid runtime contract for this model'],
+      ['vendor/no-mtp-contract', undefined],
     ]);
+  });
+
+  it('skips a cached pack with no config.json, and says why', async () => {
+    const available = await cacheOf([
+      { repo_id: 'Vendor/Good-MTPLX', has_config: true, validation: { ok: true } },
+      { repo_id: 'vendor/broken-pack', has_config: false, validation: { ok: false } },
+    ]);
+
+    expect(available.map((m) => [m.id, m.unusable])).toEqual([
+      ['Vendor/Good-MTPLX', undefined],
+      ['vendor/broken-pack', 'MTPLX reports no config.json in this model pack'],
+    ]);
+  });
+
+  it('keeps a catalogue from an mtplx that reports no has_config at all', async () => {
+    // The field is read with `=== false` so an older CLI omitting it does not
+    // have its whole catalogue declared unusable.
+    const available = await cacheOf([{ repo_id: 'Vendor/Good-MTPLX', validation: { ok: true } }]);
+
+    expect(available.map((m) => [m.id, m.unusable])).toEqual([['Vendor/Good-MTPLX', undefined]]);
   });
 
   it('builds the serve argv from configuration only', () => {
