@@ -334,6 +334,15 @@ adds `loadArgs`), so tests keep compiling against the concrete adapter.
   Anything new that enumerates `config.models` for a user-facing purpose has to
   decide whether it filters: `doctor` and `lrd models` deliberately do not, so
   the entry stays visible to the person who wrote it.
+- **`apply` owns keys, not blocks.** Writing the gateway's own provider block
+  whole — one `modify(content, ['provider', PROVIDER_ID], …)` in opencode, or
+  `providers[PROVIDER_ID] = { … }` in codex — deletes everything the user put
+  inside it: a per-model `variants`, an extra `options.headers`, a `wire_api`, a
+  comment between two keys. Both adapters therefore edit one leaf path at a
+  time. It is invisible in review and shows up only as a hand-written key
+  vanishing on the next apply. The single deletion that stays is a model entry
+  whose `models:` id is gone, since the agent would otherwise offer a model the
+  gateway 404s; an unknown `limit` is _not_ deleted, only not written.
 - **Core must not import a concrete adapter.** Only the composition root
   (`src/index.ts`) does. Runtime CLI flags belong in adapters, agent formats in
   agent packages.

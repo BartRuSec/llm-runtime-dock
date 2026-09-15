@@ -75,6 +75,38 @@ base_url = "http://127.0.0.1:9999/v1"
     expect(content).not.toContain('secret');
   });
 
+  it('keeps keys the user added to the gateway’s own provider table', async () => {
+    const existing = `[model_providers.llm-runtime-dock]
+name = "llm-runtime-dock"
+base_url = "http://127.0.0.1:1/v1"
+wire_api = "responses"
+request_max_retries = 5
+`;
+    const { content } = await agent.render(plan(existing));
+    const provider = (parseToml(content) as Record<string, any>).model_providers[
+      'llm-runtime-dock'
+    ];
+    // Owned keys are written; everything else in the table is the user's.
+    expect(provider.base_url).toBe('http://127.0.0.1:8787/v1');
+    expect(provider.wire_api).toBe('responses');
+    expect(provider.request_max_retries).toBe(5);
+  });
+
+  it('drops an env_key once the mapped model has no credential', async () => {
+    const existing = `[model_providers.llm-runtime-dock]
+name = "llm-runtime-dock"
+base_url = "http://127.0.0.1:8787/v1"
+env_key = "OLD_KEY"
+`;
+    const { content } = await agent.render(plan(existing));
+    const provider = (parseToml(content) as Record<string, any>).model_providers[
+      'llm-runtime-dock'
+    ];
+    // It names a variable this entry no longer has; leaving it points Codex at
+    // something unset.
+    expect(provider.env_key).toBeUndefined();
+  });
+
   it('warns before a rewrite drops comments', async () => {
     // TOML round-tripping cannot preserve them, so say so rather than
     // reformatting the user's file silently.
