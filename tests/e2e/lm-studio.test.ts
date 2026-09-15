@@ -126,7 +126,11 @@ models:
     // The server survived the switch: it is still answering.
     const health = await fetch(`http://127.0.0.1:${port}/health`);
     expect(health.status).toBe(200);
-    expect(service.status().lastRelease).toEqual({ modelId: 'local-a', via: 'unload_model' });
+    expect(service.status().lastRelease).toEqual({
+      modelId: 'local-a',
+      via: 'unload_model',
+      reason: 'switch',
+    });
   });
 
   it('starts only one server across a switch', async () => {

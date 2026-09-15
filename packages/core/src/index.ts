@@ -1,6 +1,7 @@
 export * from './adapter.js';
 export * from './agent.js';
 export * from './agent-apply.js';
+export * from './config/duration.js';
 export * from './config/load.js';
 export * from './config/paths.js';
 export * from './config/reserved.js';

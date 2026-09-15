@@ -8,8 +8,9 @@ import type { AuthConfig, ModelRelease, RuntimeInstance } from '../types.js';
 import { checkExtraArgs, checkOptionKeys } from './reserved.js';
 import type { ConfigLocation } from './paths.js';
 import { resolveConfigLocation } from './paths.js';
-import type { RawAgents, RawConfig, RawRuntimeEntry, ServerConfig } from './schema.js';
+import type { RawAgents, RawConfig, RawRuntimeEntry } from './schema.js';
 import { rawConfigSchema } from './schema.js';
+import { parseDuration } from './duration.js';
 
 /**
  * One entry of the `runtimes:` map, resolved (§12).
@@ -35,9 +36,24 @@ export interface ResolvedRuntime {
   readonly raw: Readonly<Record<string, unknown>>;
 }
 
+/**
+ * The `server:` block, resolved (§12).
+ *
+ * Hand-written rather than `z.infer<typeof serverSchema>`, because the schema
+ * holds `idle_unload` as a person writes it (`60m`, `1h`, a bare number) and
+ * everything downstream wants milliseconds. Same shape as every per-entry flag:
+ * `.optional()` in zod, defaulted here in `buildConfig`.
+ */
+export interface ServerSettings {
+  readonly host: string;
+  readonly port: number;
+  /** How long the gateway may sit idle before it releases the occupant. 0 = never (§29). */
+  readonly idleUnloadMs: number;
+}
+
 export interface DockConfig {
   readonly location: ConfigLocation;
-  readonly server: ServerConfig;
+  readonly server: ServerSettings;
   /** The declared runtimes, keyed by the `runtimes:` key. */
   readonly runtimes: ReadonlyMap<string, ResolvedRuntime>;
   /** Fully resolved runtime instances, keyed by logical model id. */
@@ -55,6 +71,15 @@ export interface LoadConfigOptions {
 }
 
 const DEFAULT_HOST = '127.0.0.1';
+
+/**
+ * An hour of silence before the occupant is released (§29).
+ *
+ * Long enough that a normal pause in a coding session — lunch, a meeting, a long
+ * build — never costs a reload, short enough that a gateway left running
+ * overnight is not still holding a 27B model in the morning.
+ */
+export const DEFAULT_IDLE_UNLOAD_MS = 3_600_000;
 
 export const loadConfig = (
   registry: AdapterRegistry,
@@ -248,7 +273,16 @@ const buildConfig = (
   checkKeptResidency(models, runtimes, runtimeAdapters);
   checkAgentRoles(raw.agents, models);
 
-  return { location, server: raw.server, runtimes, models, agents: raw.agents, raw };
+  const server: ServerSettings = {
+    host: raw.server.host,
+    port: raw.server.port,
+    idleUnloadMs:
+      raw.server.idle_unload === undefined
+        ? DEFAULT_IDLE_UNLOAD_MS
+        : parseDuration(raw.server.idle_unload, 'server.idle_unload'),
+  };
+
+  return { location, server, runtimes, models, agents: raw.agents, raw };
 };
 
 /**

@@ -1,5 +1,11 @@
 import { startGateway } from '@llm-runtime-dock/gateway';
-import { createDebugTap, createDockService, servedModelIds } from '@llm-runtime-dock/core';
+import {
+  createDebugTap,
+  createDockService,
+  formatDuration,
+  parseDuration,
+  servedModelIds,
+} from '@llm-runtime-dock/core';
 import type { DebugTap } from '@llm-runtime-dock/core';
 import type { CliContext } from '../context.js';
 import { keyValue, labelWidth } from '../output.js';
@@ -17,6 +23,8 @@ export interface ServeOptions {
   /** Capture what this gateway forwards and receives, to an NDJSON file (§14). */
   readonly debug?: boolean;
   readonly debugDir?: string;
+  /** Overrides `server.idle_unload` for this run (§29). Any duration spelling. */
+  readonly idleUnload?: string;
 }
 
 export const runServe = async (context: CliContext, options: ServeOptions = {}): Promise<void> => {
@@ -43,10 +51,18 @@ export const runServe = async (context: CliContext, options: ServeOptions = {}):
       })
     : null;
 
+  // Flag, then file, then the default the config loader already resolved —
+  // the same order `--host`/`--port` take below.
+  const idleUnloadMs =
+    options.idleUnload === undefined
+      ? config.server.idleUnloadMs
+      : parseDuration(options.idleUnload, '--idle-unload');
+
   const service = createDockService({
     config,
     registry: context.adapters,
     logger: context.logger,
+    idleUnloadMs,
     ...(tap ? { tap } : {}),
   });
 
@@ -65,7 +81,7 @@ export const runServe = async (context: CliContext, options: ServeOptions = {}):
     // One scheme for the whole block, the same one `status` prints: a styled
     // label, then a value styled by what it is. Prose lines and a bare-label
     // line mixed into this read as three different formats.
-    const labels = ['config', 'endpoint', 'models'];
+    const labels = ['config', 'endpoint', 'models', 'idle'];
     const width = labelWidth(labels);
     const line = (label: string, value: string): void =>
       context.out(keyValue(label, value, width, { label: theme.label }));
@@ -78,6 +94,14 @@ export const runServe = async (context: CliContext, options: ServeOptions = {}):
     line(
       'models',
       models.length > 0 ? models.map((id) => theme.id(id)).join(', ') : theme.muted('(none)'),
+    );
+    // On by default, and it unloads a model on its own, so it is said rather
+    // than left to be discovered from an empty `lrd status` the next morning.
+    line(
+      'idle',
+      idleUnloadMs > 0
+        ? `${theme.id(formatDuration(idleUnloadMs))} ${theme.muted('then unload')}`
+        : theme.muted('off'),
     );
   }
   if (tap) {

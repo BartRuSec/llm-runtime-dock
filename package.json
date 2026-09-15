@@ -48,6 +48,8 @@
     "build": "node scripts/sync-version.mjs && pnpm -r run build && node scripts/bundle.mjs",
     "bundle": "node scripts/bundle.mjs",
     "version:sync": "node scripts/sync-version.mjs",
+    "version:bump": "node scripts/bump-version.mjs",
+    "release:github": "node scripts/release-github.mjs",
     "prepack": "pnpm run build",
     "dev": "node scripts/dev.mjs",
     "clean": "pnpm -r run clean && rimraf dist",

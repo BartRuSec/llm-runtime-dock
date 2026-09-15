@@ -222,6 +222,7 @@ field.
 server:
   host: 127.0.0.1
   port: 8787
+  idle_unload: 60m # unload after an hour of quiet; 0 to never
 
 runtimes:
   mtplx:
@@ -291,6 +292,13 @@ Clients send the logical id and never see the backend model:
 
 ### Fields you will actually set
 
+On the gateway itself:
+
+| field           | meaning                                                            |
+| --------------- | ------------------------------------------------------------------ |
+| `host` / `port` | where `lrd` listens. Defaults to `127.0.0.1:8787`                  |
+| `idle_unload`   | unload the loaded model after this long with nothing to do (below) |
+
 On a runtime:
 
 | field                        | meaning                                                                      |
@@ -335,7 +343,9 @@ Some arguments belong to the gateway and are rejected rather than silently
 merged: `--host`, `--port`, `--model`, served-id flags like `--identifier`,
 `--api-key`, and idle-unload flags such as LM Studio's `--ttl` — an idle
 auto-unload would drop the model behind the gateway's back and leave its view of
-the world wrong. The check covers `extra_args` too, and the error names the
+the world wrong. That is about _who owns the timer_, not about the idea: the
+gateway runs one itself, in front of its own bookkeeping, and you set it with
+`idle_unload` (below). The check covers `extra_args` too, and the error names the
 field to use instead. The full table, with the reasoning per flag, is in
 [§12](docs/05-configuration.md#configuration).
 
@@ -355,6 +365,51 @@ releasing foreign mtplx server on :8001 to free the resident slot
 ```
 
 The reasoning is in [§8 of the specification](docs/03-lifecycle.md#lifecycle).
+
+### Unloading when you stop using it
+
+`lrd serve` is a long-lived process, and until something asks for a different
+model nothing frees the one it is holding. Leave the gateway running after a
+morning's work and that 27B is still in memory at midnight.
+
+So it unloads by itself after an hour of quiet:
+
+```yaml
+server:
+  idle_unload: 60m # 0 never unloads
+```
+
+Write it as `60m`, `1h`, `90s`, `3600000ms`, or a bare number of milliseconds.
+`lrd serve --idle-unload 90s` overrides it for one run, and `lrd serve` prints
+the window it is using on startup:
+
+```text
+idle:     1h then unload
+```
+
+The next request loads the model again exactly as the first one did — the cost
+is one reload after an hour of not working, which is the trade the default is
+picked for. Turn it off with `0` if you would rather keep the model warm
+indefinitely.
+
+Two things it will not do:
+
+- **it never unloads a `keep_resident` model.** That flag means "for as long as
+  the gateway runs", and an idle spell is not the gateway stopping;
+- **it will not stop a server it did not start.** If `lrd` attached to an MTPLX
+  or custom server you launched yourself, stopping it is the only way to free
+  that memory — and doing that because `lrd` went quiet is not its call. It says
+  so in the log and leaves it alone. On LM Studio, oMLX and Ollama the question
+  never arises: unloading one model leaves the server, and everyone else on it,
+  untouched.
+
+When it has unloaded something, `lrd status` says so rather than just showing an
+empty slot:
+
+```text
+resident: none
+released: coding-quality (idle, stop_server)
+```
 
 ### Keeping one model always loaded
 
@@ -419,8 +474,8 @@ kept:      summariser (mtplx, ready, 0 active)
 serving:   summariser
 ```
 
-Its lifetime is the gateway's. Stopping `lrd serve` releases everything loaded,
-kept entries included — nothing would be left to free the memory otherwise, and
+Its lifetime is the gateway's — the idle unload above does not touch it either.
+Stopping `lrd serve` releases everything loaded, kept entries included — nothing would be left to free the memory otherwise, and
 a model outliving the process that loaded it is exactly the leak this gateway
 exists to prevent.
 

@@ -121,7 +121,9 @@ Agent configuration files belong to the user, not to the gateway. Every apply:
 
 - writes back to **the file that exists** — an `opencode.jsonc` stays `.jsonc`, it does not become `.json`;
 - **merges**, preserving every key it does not own. Schema references, plugin lists, disabled providers, unrelated provider blocks and the user's own settings all survive;
-- touches only the provider block the gateway owns plus the keys the `agents:` mapping names;
+- owns **keys, not blocks**. Even inside the provider block that carries the gateway's own name, apply writes only the keys it is responsible for and leaves the rest alone. A `variants` block or an `options` block added to one model, extra provider options such as headers or a timeout, a `wire_api` in Codex's provider table, a comment written between two keys — all of it is the user's, and all of it survives. The owned keys are: `npm`, `name`, `options.baseURL`, `options.apiKey` and each model's `name` and `limit` for OpenCode; `name`, `base_url` and `env_key` for Codex; the `env` variables listed below for Claude Code;
+- touches only those keys plus the ones the `agents:` mapping names;
+- **deletes in exactly one place**: a model entry under the gateway's own provider block whose `models:` id is gone — removed from the configuration, or carrying `disabled: true`. Leaving it would have the agent offer a model the gateway answers 404 for ([§12](05-configuration.md#configuration)). A limit the gateway cannot state is a different case: it is not written, and a hand-written one therefore stands;
 - backs up the previous file first, and reports the path it wrote;
 - is idempotent: running it twice produces the same file.
 

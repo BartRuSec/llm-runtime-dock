@@ -50,6 +50,12 @@ Start the gateway. This is what a global install exists for.
 
 `--host` and `--port` override the configured bind address.
 
+`--idle-unload <duration>` overrides `server.idle_unload`
+([§29](03-lifecycle.md#memory--resource-policy)) for one run: how long the
+gateway may sit with nothing to do before it releases the model it is holding.
+Any spelling the config file takes works here — `--idle-unload 90s`,
+`--idle-unload 1h`, `--idle-unload 0` to switch it off.
+
 `--debug` captures every proxied request and response to an NDJSON file, and `--debug-dir <path>` says where (default: a `llm-runtime-dock` subdirectory of the system temp directory). `LRD_DEBUG` and `LRD_DEBUG_DIR` do the same from the environment; `LRD_DEBUG=0`, `false` or `off` mean off, so the documented way to disable it does not accidentally enable it.
 
 The capture is described in [§14](06-gateway-api.md#gateway-api). It holds whole conversations, so `serve --debug` prints the file's path and a warning to stderr on every run.
@@ -62,7 +68,11 @@ one aligned block on stdout, in the same shape `status` uses:
 config:   ~/.config/llm-runtime-dock/config.yaml
 endpoint: http://127.0.0.1:8787
 models:   coding-quality, coding-fast
+idle:     1h then unload
 ```
+
+The `idle:` row is there because that behaviour is on by default and frees a
+model without being asked. `off` when the window is zero.
 
 `serve` is the one command that prints its own `config:` row rather than the
 loose breadcrumb every other command emits, so the path is not reported twice.
@@ -111,6 +121,19 @@ queue:    0
 
 The `config:` row is the path the _gateway_ reported, so `status` — like
 `serve` — prints it in place of the breadcrumb rather than after it.
+
+With nothing resident, a `released:` row says why, when anything has been
+released this session:
+
+```text
+resident: none
+released: coding-quality (idle, stop_server)
+queue:    0
+```
+
+`resident: none` on its own cannot tell a gateway that has served nothing yet
+apart from one whose idle window expired overnight
+([§29](03-lifecycle.md#memory--resource-policy)).
 
 If no gateway answers, say so plainly and exit non-zero:
 

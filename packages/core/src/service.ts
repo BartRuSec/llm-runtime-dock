@@ -23,6 +23,12 @@ export interface DockServiceOptions {
   readonly logger?: Logger;
   readonly readyTimeoutMs?: number;
   readonly drainTimeoutMs?: number;
+  /**
+   * Release the rotating occupant after this long with nothing to do (§29).
+   * `0` disables it. Unset, the scheduler's own default of an hour applies —
+   * `serve` resolves the flag and the config file before it gets here.
+   */
+  readonly idleUnloadMs?: number;
   readonly fetchImpl?: typeof fetch;
   /** Opt-in observer of proxied bytes. Off unless `lrd serve --debug` (§14). */
   readonly tap?: RequestTap;
@@ -67,6 +73,7 @@ export const createDockService = (options: DockServiceOptions): DockService => {
     logger,
     readyTimeoutMs: options.readyTimeoutMs,
     drainTimeoutMs: options.drainTimeoutMs,
+    ...(options.idleUnloadMs !== undefined ? { idleUnloadMs: options.idleUnloadMs } : {}),
   });
 
   const resolve = (clientModelId: unknown): RuntimeInstance => resolveModel(config, clientModelId);
