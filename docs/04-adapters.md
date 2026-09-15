@@ -265,7 +265,7 @@ Surfaces: OpenAI and Anthropic.
 
 Reserved ([§12](05-configuration.md#configuration)): `--identifier`, `--ttl`, `-p/--port`, `--bind`.
 
-`--ttl` is reserved because an idle auto-unload would drop the model behind the gateway's back, leaving the tracked state wrong.
+`--ttl` is reserved because an idle auto-unload would drop the model behind the gateway's back, leaving the tracked state wrong. Idle unloading itself is not refused — the gateway does it, in front of its own bookkeeping, from `server.idle_unload` ([§29](03-lifecycle.md#memory--resource-policy)).
 
 Lifecycle must remain CLI/process based.
 
@@ -405,7 +405,10 @@ All options are server-scoped environment variables:
 | `kv_cache_type`     | `OLLAMA_KV_CACHE_TYPE`     |
 
 `OLLAMA_HOST` and `OLLAMA_KEEP_ALIVE` are reserved by the gateway. Use the
-runtime's `host`/`port` and the model's `keep_resident` instead. A kept model
+runtime's `host`/`port` and the model's `keep_resident` instead, and
+`server.idle_unload` ([§29](03-lifecycle.md#memory--resource-policy)) for the
+timed unload `OLLAMA_KEEP_ALIVE` would otherwise buy — the gateway keeps that
+timer where it can see the result. A kept model
 requires `max_loaded_models: 2` or greater when that option is set, because
 Ollama would otherwise evict the kept model to stay under the limit.
 

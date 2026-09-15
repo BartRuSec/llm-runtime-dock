@@ -40,6 +40,7 @@ advertises.
 server:
   host: 127.0.0.1
   port: 8787
+  idle_unload: 60m
 
 runtimes:
   mtplx:
@@ -101,6 +102,13 @@ models:
 ```
 
 #### Fields
+
+The `server:` block:
+
+| field           | meaning                                                                                                          |
+| --------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `host` / `port` | where the gateway itself listens. Defaults to `127.0.0.1:8787`; `--host`/`--port` on `lrd serve` override it     |
+| `idle_unload`   | release the rotating occupant after this long with nothing to do (below). Defaults to `60m`; `0` switches it off |
 
 A declared runtime:
 
@@ -178,6 +186,34 @@ The port is checked as well as the runtime key: two runtime entries aimed at one
 
 Nothing stops several entries carrying the flag, and nothing measures what that costs — the memory budget is the user's ([§29](03-lifecycle.md#memory--resource-policy)). `doctor` warns past the first.
 
+#### Unloading after idle
+
+`server.idle_unload` is how long the gateway may sit with nothing to do before it
+releases the model it is holding ([§29](03-lifecycle.md#memory--resource-policy)).
+It defaults to `60m`. `0` switches it off, and nothing then frees a model until
+the next switch or until the gateway stops.
+
+```yaml
+server:
+  host: 127.0.0.1
+  port: 8787
+  idle_unload: 60m # 0 disables
+```
+
+This is the one duration in this file a person actually chooses, so it is the one
+that takes a unit: `60m`, `1h`, `90s`, `3600000ms`, or a bare number, which means
+milliseconds like every `*_timeout_ms` field elsewhere. `off` is deliberately not
+a spelling of `0` — unquoted, some YAML parsers read it as the boolean `false`,
+which is the same trap the `on`/`off` option values carry above.
+
+What it does and does not reach is [§29](03-lifecycle.md#memory--resource-policy)'s
+subject, and the two limits worth knowing here are that a `keep_resident` entry is
+never released by it, and that a single-model server the gateway merely attached to
+is left running rather than stopped.
+
+`lrd serve --idle-unload <duration>` overrides it for one run
+([§27](10-cli.md#cli)), the same way `--port` overrides `server.port`.
+
 #### Models that are configured and not served
 
 `disabled: true` on a model entry keeps it in the file and out of everything else:
@@ -229,7 +265,7 @@ Some arguments belong to the gateway and must be **rejected** in `options` and `
 | `--host`, `--port`                                               | core must know the proxy target and the health-check URL                                                       |
 | `--model`, and any served-id flag (`--model-id`, `--identifier`) | overriding it silently breaks model identity verification ([§17](03-lifecycle.md#model-identity-verification)) |
 | `--api-key`, `--api-key-file`                                    | upstream auth is configured explicitly ([§12](#configuration))                                                 |
-| runtime idle-unload flags (e.g. LM Studio `--ttl`)               | the model would unload behind the gateway's back, leaving its state stale                                      |
+| runtime idle-unload flags (e.g. LM Studio `--ttl`)               | the model would unload behind the gateway's back, leaving its state stale. Use `server.idle_unload` (below)    |
 
 Each adapter declares its own reserved list. Violations fail config loading with `RUNTIME_OPTION_RESERVED` and are reported by `doctor`, with a message naming the canonical field to use instead.
 

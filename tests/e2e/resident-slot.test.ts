@@ -153,6 +153,7 @@ models:
     expect(harness.service.status().lastRelease).toEqual({
       modelId: 'coding-quality',
       via: 'stop_server',
+      reason: 'switch',
     });
     await expectPortDead(harness.mtplxPort);
     expect(await residentModels(harness.omlxPort)).toEqual(['coder-35b']);
@@ -177,6 +178,7 @@ models:
     expect(harness.service.status().lastRelease).toEqual({
       modelId: 'omlx-coder',
       via: 'unload_model',
+      reason: 'switch',
     });
   });
 

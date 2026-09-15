@@ -211,21 +211,33 @@ export const createMtplxAdapter = (options: MtplxAdapterOptions = {}): MtplxAdap
 
     try {
       const parsed = JSON.parse(result.stdout) as {
-        models?: Array<{ repo_id?: string; validation?: { ok?: boolean } }>;
+        models?: Array<{ repo_id?: string; has_config?: boolean }>;
       };
       return (parsed.models ?? [])
         .filter(
-          (entry): entry is { repo_id: string; validation?: { ok?: boolean } } =>
+          (entry): entry is { repo_id: string; has_config?: boolean } =>
             typeof entry.repo_id === 'string',
         )
         .map((entry) => ({
           id: entry.repo_id,
           suggestedId: suggestLogicalId(entry.repo_id),
-          // MTPLX validates its own cache. A model it reports without a valid
-          // runtime contract cannot be served, so it is reported and skipped
-          // rather than written into a configuration that would fail later.
-          ...(entry.validation?.ok === false
-            ? { unusable: 'MTPLX reports no valid runtime contract for this model' }
+          // `unusable` means the runtime says it will not load this, and the
+          // only field here that says so is `has_config` — MTPLX reads it as
+          // `(dir / 'config.json').exists()`, i.e. the directory is not a model.
+          //
+          // Deliberately *not* `validation.ok`: that field is the MTP runtime
+          // contract, and this adapter used to read it as servability. It is
+          // not. MTPLX's own launch gate says so — "the gate asks one question,
+          // can this artifact execute; verification tier stays a label, it must
+          // never block loading" — and a pack with no contract degrades to
+          // target-only AR on its own (`native-ar-only-missing-mtp` flips
+          // `--generation-mode` to `ar` and loads). Skipping those hid two
+          // working models, so a missing contract is slower, never unusable.
+          //
+          // `=== false`, not `!entry.has_config`: an older `mtplx` that omits
+          // the field must not have its whole catalogue declared unusable.
+          ...(entry.has_config === false
+            ? { unusable: 'MTPLX reports no config.json in this model pack' }
             : {}),
         }));
     } catch {

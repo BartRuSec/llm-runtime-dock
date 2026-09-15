@@ -141,7 +141,11 @@ describe('runtime switching', () => {
 
     const status = service.status();
     expect(status.resident?.modelId).toBe('coding-fast');
-    expect(status.lastRelease).toEqual({ modelId: 'coding-quality', via: 'stop_server' });
+    expect(status.lastRelease).toEqual({
+      modelId: 'coding-quality',
+      via: 'stop_server',
+      reason: 'switch',
+    });
 
     // A second request for the now-resident entry must not restart it.
     const since = status.resident?.since;

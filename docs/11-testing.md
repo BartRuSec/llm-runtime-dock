@@ -65,6 +65,13 @@ Also test:
 - returning to a model already in memory calls neither `acquire` nor `release`;
 - `keep_resident` on a `stop_server` runtime shared with another entry fails config loading with `CONFIG_INVALID`, and so does the same clash spelled as two runtimes on one port;
 - shutdown releases kept entries too;
+- an idle window releases the rotating occupant and nothing else: a kept entry survives it and is still released by shutdown ([§29](03-lifecycle.md#memory--resource-policy));
+- an idle window leaves a `stop_server` server the gateway attached to running, and unloads from an `unload_model` server whoever started it;
+- the idle timer arms after a request that was cancelled mid-acquire, where no lease was ever released — the case that distinguishes arming on the queue pump from arming on lease release;
+- a request arriving while the idle sweep is mid-release queues behind it rather than racing it;
+- a failed idle release leaves the gateway running and is retried on the next window;
+- a shutdown landing mid-sweep releases each loaded entry once, not twice, and leaves no timer behind;
+- `server.idle_unload` is read in every duration spelling, defaults to an hour, and `0` disables the sweep entirely;
 - a `disabled` entry is omitted from `/v1/models` and from an agent's model list, and a request naming it is refused with `MODEL_NOT_FOUND` before the scheduler is reached ([§12](05-configuration.md#configuration));
 - disabling an entry an `agents:` role names still loads the configuration, and fails only in `apply` and `doctor`;
 - `probe --save` refreshing a rediscovered entry leaves a hand-written `disabled: true` in place;
@@ -179,7 +186,8 @@ meaningful automated form and are checked by hand.
 - a model that cannot be released fails the switch instead of doubling residency;
 - a kept entry is never released by a switch, and reaching it never releases the occupant;
 - exactly one entry holds the serving token, whatever else is loaded;
-- an adapter enforcing residency is told which models to spare.
+- an adapter enforcing residency is told which models to spare;
+- an idle gateway gives the memory back, and says why it did ([§29](03-lifecycle.md#memory--resource-policy)).
 
 #### Reliability
 

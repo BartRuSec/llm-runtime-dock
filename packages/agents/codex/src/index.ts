@@ -65,7 +65,12 @@ export const createCodexIntegration = (options: CodexOptions = {}): AgentIntegra
     const model = plan.roles.model;
     const providers = isRecord(existing.model_providers) ? { ...existing.model_providers } : {};
 
+    // The gateway owns `name`, `base_url` and `env_key` in this table and
+    // nothing else: a `wire_api` or `http_headers` the user added is theirs.
+    // Assigning a fresh object here would delete them (§23).
+    const previous = isRecord(providers[PROVIDER_ID]) ? providers[PROVIDER_ID] : {};
     const provider: Record<string, unknown> = {
+      ...previous,
       name: PROVIDER_ID,
       base_url: `${plan.gatewayBaseUrl}/v1`,
     };
@@ -73,6 +78,10 @@ export const createCodexIntegration = (options: CodexOptions = {}): AgentIntegra
     if (mapped?.apiKeyEnv) {
       // A variable name, not a value (§23).
       provider.env_key = mapped.apiKeyEnv;
+    } else {
+      // Deleted rather than left: it names a credential this entry no longer
+      // has, so Codex would read an unset variable.
+      delete provider.env_key;
     }
     providers[PROVIDER_ID] = provider;
 

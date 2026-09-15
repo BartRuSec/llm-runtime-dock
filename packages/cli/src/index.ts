@@ -147,9 +147,19 @@ export const runCli = async (options: RunCliOptions): Promise<number> => {
     .option('--port <port>', 'bind port (default: from configuration)', (value) => Number(value))
     .option('--debug', 'capture every proxied request and response to an NDJSON file')
     .option('--debug-dir <path>', 'where --debug writes (default: a temp subdirectory)')
+    .option(
+      '--idle-unload <duration>',
+      'release the loaded model after this long with nothing to do, e.g. 60m or 0 for never',
+    )
     .action(
       async (
-        local: { host?: string; port?: number; debug?: boolean; debugDir?: string },
+        local: {
+          host?: string;
+          port?: number;
+          debug?: boolean;
+          debugDir?: string;
+          idleUnload?: string;
+        },
         command: Command,
       ) => {
         await runServe(contextFor(command), local);

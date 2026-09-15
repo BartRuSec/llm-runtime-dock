@@ -8,7 +8,8 @@
 //
 // `models --json` reports the installed *catalogue* — what MTPLX could serve,
 // independent of any port — from $FAKE_CATALOGUE (comma-separated repo ids,
-// each optionally suffixed `!` to mark it as failing MTPLX's own validation).
+// each optionally suffixed `!` to mark the pack as having no `config.json`,
+// which is the one thing MTPLX reports that means "this will not load").
 //
 // `serve` records its full argv to $FAKE_ARGV_FILE so tests can assert that
 // launch options and extra_args reached the command line.
@@ -54,10 +55,16 @@ if (command === 'serve') {
     const catalogue = (process.env.FAKE_CATALOGUE ?? process.env.FAKE_MODEL ?? 'Vendor/fake-model')
       .split(',')
       .filter(Boolean)
-      .map((entry) => ({
-        repo_id: entry.endsWith('!') ? entry.slice(0, -1) : entry,
-        validation: { ok: !entry.endsWith('!') },
-      }));
+      .map((entry) => {
+        const broken = entry.endsWith('!');
+        return {
+          repo_id: broken ? entry.slice(0, -1) : entry,
+          has_config: !broken,
+          // Carried because the real CLI carries it, and because the adapter
+          // must keep ignoring it: `ok` is the MTP contract, not servability.
+          validation: { ok: !broken },
+        };
+      });
     process.stdout.write(JSON.stringify({ models: catalogue }) + '\n');
   } else {
     process.stdout.write(`${process.env.FAKE_MODEL ?? 'fake-model'}\n`);

@@ -23,6 +23,9 @@ import type { ModelRelease, RuntimeInstance, RuntimeState, ServerOwnership } fro
  * what serializes switching — two simultaneous requests cannot trigger two
  * acquire/release cycles, and a warm request cannot slip in while the occupant
  * is draining, because the pump is the only thing that hands out leases.
+ *
+ * The idle sweep is the one thing here that is not request-driven, and it takes
+ * the same lock rather than getting its own (§29).
  */
 
 export interface Lease {
@@ -39,7 +42,21 @@ export interface SchedulerOptions {
   readonly readyTimeoutMs?: number;
   /** How long to wait for active requests to finish before a switch. */
   readonly drainTimeoutMs?: number;
+  /**
+   * Release the rotating occupant after this long with nothing to do (§29).
+   * `0` switches the sweep off entirely.
+   */
+  readonly idleUnloadMs?: number;
 }
+
+/**
+ * Why the last occupant was freed (§26).
+ *
+ * `idle` is the one a user has to be able to tell apart: a `lrd status` showing
+ * nothing resident is otherwise indistinguishable from a gateway that has never
+ * served a request.
+ */
+export type ReleaseReason = 'switch' | 'idle' | 'shutdown';
 
 export interface ResidentStatus {
   readonly modelId: string;
@@ -65,7 +82,11 @@ export interface SchedulerStatus {
   readonly queueDepth: number;
   readonly switching: string | null;
   /** How the previous occupant was released, for observability (§26). */
-  readonly lastRelease: { readonly modelId: string; readonly via: ModelRelease } | null;
+  readonly lastRelease: {
+    readonly modelId: string;
+    readonly via: ModelRelease;
+    readonly reason: ReleaseReason;
+  } | null;
 }
 
 interface Slot {
@@ -75,6 +96,15 @@ interface Slot {
   ownership: ServerOwnership;
   leases: number;
   since: number;
+  /**
+   * The idle sweep looked at this slot and decided it may not free it — a
+   * single-model server the gateway attached to rather than spawned.
+   *
+   * Recorded on the slot so the decision is logged once instead of on every
+   * window, and so the timer stops re-arming against something it will never
+   * release.
+   */
+  idleSkipped: boolean;
 }
 
 interface Waiter {
@@ -89,6 +119,8 @@ interface Waiter {
 
 const DEFAULT_READY_TIMEOUT_MS = 300_000;
 const DEFAULT_DRAIN_TIMEOUT_MS = 600_000;
+/** An hour, matching `DEFAULT_IDLE_UNLOAD_MS` in config/load.ts (§29). */
+const DEFAULT_IDLE_UNLOAD_MS = 3_600_000;
 
 export interface Scheduler {
   status(): SchedulerStatus;
@@ -121,6 +153,7 @@ export const createScheduler = (options: SchedulerOptions): Scheduler => {
   const logger = options.logger ?? nullLogger;
   const readyTimeoutMs = options.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
   const drainTimeoutMs = options.drainTimeoutMs ?? DEFAULT_DRAIN_TIMEOUT_MS;
+  const idleUnloadMs = options.idleUnloadMs ?? DEFAULT_IDLE_UNLOAD_MS;
 
   /** The rotating occupant: the only slot a switch may release. */
   let resident: Slot | null = null;
@@ -142,7 +175,16 @@ export const createScheduler = (options: SchedulerOptions): Scheduler => {
   let pending = 0;
   let pumping = false;
   let switching: string | null = null;
-  let lastRelease: { modelId: string; via: ModelRelease } | null = null;
+  let lastRelease: { modelId: string; via: ModelRelease; reason: ReleaseReason } | null = null;
+  /** The pending idle sweep, if the gateway is currently quiet. */
+  let idleTimer: NodeJS.Timeout | undefined;
+  /**
+   * A sweep that has already started. `shutdown` awaits it rather than racing
+   * it: both free the loaded set, and only the sweep holds the pump's lock.
+   */
+  let idleSweep: Promise<void> | undefined;
+  /** Suppresses arming while `shutdown` is releasing everything. */
+  let shuttingDown = false;
   /** Resolvers woken when the active lease count reaches zero. */
   let drainWaiters: Array<() => void> = [];
 
@@ -197,6 +239,9 @@ export const createScheduler = (options: SchedulerOptions): Scheduler => {
     instance: RuntimeInstance,
     options: { signal?: AbortSignal; requestId?: string } = {},
   ): Promise<Lease> => {
+    // Synchronously, before anything awaits: the gateway is no longer idle the
+    // moment a request asks for the slot, not when the pump gets round to it.
+    clearIdle();
     return new Promise<Lease>((resolve, reject) => {
       const waiter: Waiter = {
         instance,
@@ -271,6 +316,13 @@ export const createScheduler = (options: SchedulerOptions): Scheduler => {
 
   /** Release the slot and stop everything. Used on gateway shutdown. */
   const shutdown = async (): Promise<void> => {
+    shuttingDown = true;
+    clearIdle();
+    // A sweep already past its timer holds the pump's lock and is releasing the
+    // occupant right now. Shutdown does not take that lock — it never needed to,
+    // because until the idle timer existed nothing here ran without a request in
+    // flight. Waiting is what keeps the two from releasing the same slot twice.
+    await idleSweep;
     for (const waiter of waiters.splice(0)) {
       waiter.settled = true;
       pending -= 1;
@@ -282,7 +334,7 @@ export const createScheduler = (options: SchedulerOptions): Scheduler => {
     for (const slot of [resident, ...kept.values()]) {
       if (!slot) continue;
       try {
-        await releaseSlot(slot);
+        await releaseSlot(slot, 'shutdown');
       } catch (error) {
         logger.error('failed to release the resident slot during shutdown', {
           event: 'slot.release_failed',
@@ -294,6 +346,9 @@ export const createScheduler = (options: SchedulerOptions): Scheduler => {
     kept.clear();
     resident = null;
     serving = null;
+    // Not a tombstone: `acquire` still works after a shutdown, so the flag only
+    // covers the release loop above.
+    shuttingDown = false;
   };
 
   const pump = async (): Promise<void> => {
@@ -326,6 +381,15 @@ export const createScheduler = (options: SchedulerOptions): Scheduler => {
       pumping = false;
       // A waiter may have arrived while the loop was finishing.
       if (waiters.length > 0) void pump();
+      // The single arming point, and it has to be this one rather than the
+      // obvious `lease.release()`. A client that aborts while its runtime is
+      // still coming up is settled with a rejection and never increments
+      // `leases` at all — the runtime stays resident on purpose, so the next
+      // waiter finds it warm — so no lease is ever released and a
+      // release-hook timer would never arm. Every path that changes the loaded
+      // set or the lease count ends in `void pump()`, so this one covers all of
+      // them; `armIdle` re-checks whether the gateway is actually quiet.
+      armIdle();
     }
   };
 
@@ -399,7 +463,7 @@ export const createScheduler = (options: SchedulerOptions): Scheduler => {
       // room for a different rotating entry. A kept target takes the token
       // without disturbing the occupant at all.
       if (!instance.keepResident && resident && resident.instance.id !== instance.id) {
-        await releaseRotating(resident);
+        await releaseRotating(resident, 'switch');
         resident = null;
       } else if (instance.keepResident && resident) {
         logger.info('leaving the current occupant loaded for a kept entry', {
@@ -418,6 +482,7 @@ export const createScheduler = (options: SchedulerOptions): Scheduler => {
         ownership: 'unknown',
         leases: 0,
         since: Date.now(),
+        idleSkipped: false,
       };
       const keepLoaded = keepLoadedFor(instance);
       if (instance.keepResident) kept.set(instance.id, slot);
@@ -534,7 +599,7 @@ export const createScheduler = (options: SchedulerOptions): Scheduler => {
   };
 
   /** Free the rotating occupant with its own adapter. Already drained. */
-  const releaseRotating = async (slot: Slot): Promise<void> => {
+  const releaseRotating = async (slot: Slot, reason: ReleaseReason): Promise<void> => {
     const wasFailed = slot.state === 'failed';
     slot.state = 'stopping';
 
@@ -548,7 +613,7 @@ export const createScheduler = (options: SchedulerOptions): Scheduler => {
         .catch(() => ({ state: 'unreachable' as const }));
       if (health.state === 'unreachable') {
         try {
-          await releaseSlot(slot);
+          await releaseSlot(slot, reason);
         } catch (error) {
           logger.warn('ignoring release failure for a runtime that is already gone', {
             event: 'slot.release_after_crash',
@@ -556,14 +621,14 @@ export const createScheduler = (options: SchedulerOptions): Scheduler => {
             adapter: slot.adapter.id,
             error: (error as Error).message,
           });
-          lastRelease = { modelId: slot.instance.id, via: slot.adapter.modelRelease };
+          lastRelease = { modelId: slot.instance.id, via: slot.adapter.modelRelease, reason };
         }
         if (serving === slot) serving = null;
         return;
       }
     }
 
-    await releaseSlot(slot);
+    await releaseSlot(slot, reason);
     if (serving === slot) serving = null;
   };
 
@@ -585,7 +650,7 @@ export const createScheduler = (options: SchedulerOptions): Scheduler => {
     kept.delete(slot.instance.id);
     if (resident === slot) resident = null;
     if (serving === slot) serving = null;
-    await releaseRotating(slot).catch((error: unknown) => {
+    await releaseRotating(slot, 'switch').catch((error: unknown) => {
       logger.warn('could not release a runtime before rebuilding it', {
         event: 'slot.release_failed',
         runtime: slot.instance.id,
@@ -595,7 +660,7 @@ export const createScheduler = (options: SchedulerOptions): Scheduler => {
     });
   };
 
-  const releaseSlot = async (slot: Slot): Promise<void> => {
+  const releaseSlot = async (slot: Slot, reason: ReleaseReason): Promise<void> => {
     const log = logger.child({
       runtime: slot.instance.id,
       adapter: slot.adapter.id,
@@ -617,12 +682,124 @@ export const createScheduler = (options: SchedulerOptions): Scheduler => {
       throw wrapReleaseError(error, slot);
     }
     slot.state = 'stopped';
-    lastRelease = { modelId: slot.instance.id, via: slot.adapter.modelRelease };
+    lastRelease = { modelId: slot.instance.id, via: slot.adapter.modelRelease, reason };
     log.info('resident slot freed', {
       event: 'slot.released',
       via: slot.adapter.modelRelease,
+      reason,
       durationMs: Date.now() - startedAt,
     });
+  };
+
+  /**
+   * Whether the idle sweep may free this slot at all (§29).
+   *
+   * An `unload_model` runtime always may: the unload names one model and the
+   * shared server keeps serving everyone else, so there is nothing to weigh.
+   *
+   * A `stop_server` runtime has only one lever, and whose server it is decides
+   * the answer. One the gateway spawned is its own to stop. One it *attached*
+   * to belongs to somebody else, and the justification a switch uses — §8, the
+   * one-resident invariant outranks leaving a foreign server alone — does not
+   * apply here: a switch has to free that memory for the next model, while an
+   * idle gateway has nothing it needs the memory for. Killing a server a person
+   * started by hand because this process went quiet is a different act, so it
+   * is left alone and said out loud.
+   *
+   * `unknown` occurs only mid-acquire, never on a ready slot; treated as
+   * attached, which is the cautious reading.
+   */
+  const idleReleasable = (slot: Slot): boolean =>
+    slot.adapter.modelRelease === 'unload_model' || slot.ownership === 'spawned';
+
+  const clearIdle = (): void => {
+    if (idleTimer === undefined) return;
+    clearTimeout(idleTimer);
+    idleTimer = undefined;
+  };
+
+  /**
+   * Start the idle window, if the gateway really is idle.
+   *
+   * Called from one place — `pump`'s `finally` — so the guard rather than the
+   * call site is what decides. `pumping` is redundant with `pending === 0`
+   * given how the pump is written today, and is checked anyway so the property
+   * holds by construction: the sweep takes that same flag.
+   */
+  const armIdle = (): void => {
+    clearIdle();
+    if (idleUnloadMs <= 0 || shuttingDown) return;
+    if (pumping || pending > 0 || waiters.length > 0) return;
+    if (!resident || resident.idleSkipped || resident.leases > 0) return;
+    // A kept entry holding a lease still counts as the gateway being in use.
+    for (const slot of kept.values()) if (slot.leases > 0) return;
+    idleTimer = setTimeout(() => {
+      idleSweep = sweepIdle().finally(() => {
+        idleSweep = undefined;
+      });
+    }, idleUnloadMs);
+    // Never the reason the process stays alive: the HTTP server owns that.
+    idleTimer.unref();
+  };
+
+  /**
+   * Release the rotating occupant after a quiet spell (§29).
+   *
+   * Kept entries are not considered at all. `keep_resident` means the entry's
+   * lifetime is the gateway's, and shutdown stays the only place that stops
+   * applying — an idle window is not a shutdown.
+   *
+   * It takes `pumping` rather than a lock of its own, because that flag is
+   * exactly what serializes a release against a switch and a drain. Anything
+   * that reached `adapter.release` from a timer without it would race
+   * `ensureResident`.
+   */
+  const sweepIdle = async (): Promise<void> => {
+    idleTimer = undefined;
+    // Work arrived between the timer firing and this callback running. Whatever
+    // is doing it ends in `void pump()`, which re-arms.
+    if (pumping || waiters.length > 0 || shuttingDown) return;
+    const slot = resident;
+    if (!slot) return;
+    pumping = true;
+    try {
+      if (slot.leases > 0) return;
+      if (!idleReleasable(slot)) {
+        slot.idleSkipped = true;
+        logger.info(
+          `leaving the foreign ${slot.adapter.id} server on :${slot.instance.port ?? '?'} loaded: only a switch may stop a server the gateway did not start`,
+          {
+            event: 'slot.idle_skipped',
+            runtime: slot.instance.id,
+            adapter: slot.adapter.id,
+            ownership: slot.ownership,
+          },
+        );
+        return;
+      }
+      logger.info('releasing the resident slot after an idle period', {
+        event: 'slot.idle_release',
+        runtime: slot.instance.id,
+        adapter: slot.adapter.id,
+        idleMs: idleUnloadMs,
+      });
+      await releaseRotating(slot, 'idle');
+      if (resident === slot) resident = null;
+    } catch (error) {
+      // An unhandled rejection out of a timer callback would take the gateway
+      // down. The entry stays as it is and the next window tries again; a
+      // runtime that will not let go is a real problem, but not this one's.
+      logger.warn('idle release failed; leaving the runtime loaded', {
+        event: 'slot.idle_release_failed',
+        runtime: slot.instance.id,
+        adapter: slot.adapter.id,
+        error: (error as Error).message,
+      });
+    } finally {
+      pumping = false;
+      if (waiters.length > 0) void pump();
+      else armIdle();
+    }
   };
 
   const waitForDrain = async (slot: Slot): Promise<void> => {

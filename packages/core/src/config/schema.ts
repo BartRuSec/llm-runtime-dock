@@ -124,6 +124,26 @@ export const serverSchema = z
   .object({
     host: z.string().min(1).default('127.0.0.1'),
     port: z.number().int().min(1).max(65535).default(8787),
+    /**
+     * Release the rotating occupant after this long with nothing to do (§29).
+     * Defaults to an hour; `0` switches it off.
+     *
+     * Shape only here: a duration may be written `60m`, `1h`, `90s`, `3600000ms`
+     * or as a bare number of milliseconds, and `parseDuration` in ./duration.ts
+     * is what resolves it — in `buildConfig`, so the error names the YAML key.
+     *
+     * The first key in this block that is not a bind setting. It sits here
+     * rather than on a model because it is a property of this gateway process,
+     * not of any one entry.
+     */
+    idle_unload: z
+      .union([z.number(), z.string()], {
+        // zod's own text for a failed union is a bare "Invalid input", which
+        // says nothing at all for a field whose whole point is that it accepts
+        // several spellings.
+        error: 'expected a duration such as 60m, 1h, 90s or a number of milliseconds',
+      })
+      .optional(),
   })
   .strict();
 
