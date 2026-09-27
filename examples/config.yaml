@@ -5,12 +5,18 @@
 #
 # There are no secrets in this file and there never should be. An upstream
 # credential is referenced by environment variable through a runtime's `auth:`
-# block; the gateway itself listens on loopback without authentication.
+# block; the gateway itself listens on loopback with no key required unless
+# `server.auth` is set below, or LRD_API_KEY happens to be, out of the box.
 
 server:
-  # Default bind. Lifecycle controls (/status, /switch) are loopback-only.
+  # Default bind. Lifecycle controls (/status, /switch) are loopback-only,
+  # whether or not an API key is configured.
   host: 127.0.0.1
   port: 8787
+  # Uncomment to require an API key from every client (`lrd key generate --env`
+  # writes exactly this). Never `api_key_file` here — see the note above.
+  # auth:
+  #   api_key_env: LRD_API_KEY
   # How long the gateway may sit with nothing to do before it unloads the model
   # it is holding. Nothing else ever frees it: until the next switch, or until
   # `lrd serve` stops, that model keeps its memory. Write it as 60m, 1h, 90s,

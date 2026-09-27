@@ -321,3 +321,176 @@ describe('loopback-only lifecycle controls', () => {
     expect(isLoopbackAddress(undefined)).toBe(false);
   });
 });
+
+describe('gateway API-key authentication', () => {
+  const serveWithKey = async (
+    apiKey: string | undefined,
+  ): Promise<{ url: string; close: () => Promise<void> }> => {
+    const port = await freePort();
+    const registry = createAdapterRegistry([createCustomAdapter({ logger })]);
+    const config = parseConfig(
+      registry,
+      `server: { host: 127.0.0.1, port: ${port} }\nmodels: {}`,
+      fakeLocation(),
+    );
+    const service = createDockService({ config, registry, logger });
+    const server = createGateway({
+      service,
+      logger,
+      host: '127.0.0.1',
+      port,
+      ...(apiKey !== undefined ? { apiKey } : {}),
+    });
+    await new Promise<void>((resolve) => server.listen(port, '127.0.0.1', resolve));
+    return {
+      url: `http://127.0.0.1:${port}`,
+      close: async () => {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        await service.shutdown();
+      },
+    };
+  };
+
+  it('is unaffected when no key is configured', async () => {
+    const gateway = await serveWithKey(undefined);
+    try {
+      expect((await fetch(`${gateway.url}/v1/models`)).status).toBe(200);
+      expect((await fetch(`${gateway.url}/status`)).status).toBe(200);
+    } finally {
+      await gateway.close();
+    }
+  });
+
+  it('refuses every route but /health when a key is configured and none is presented', async () => {
+    const gateway = await serveWithKey('the-key');
+    try {
+      expect((await fetch(`${gateway.url}/health`)).status).toBe(200);
+      const response = await fetch(`${gateway.url}/v1/models`);
+      expect(response.status).toBe(401);
+      const body = (await response.json()) as { error: { code: string; type: string } };
+      expect(body.error.code).toBe('unauthorized');
+      expect(body.error.type).toBe('authentication_error');
+      expect(response.headers.get('www-authenticate')).toBe('Bearer');
+    } finally {
+      await gateway.close();
+    }
+  });
+
+  it('accepts Authorization: Bearer', async () => {
+    const gateway = await serveWithKey('the-key');
+    try {
+      const response = await fetch(`${gateway.url}/v1/models`, {
+        headers: { authorization: 'Bearer the-key' },
+      });
+      expect(response.status).toBe(200);
+    } finally {
+      await gateway.close();
+    }
+  });
+
+  it('accepts x-api-key, for Anthropic-shaped clients', async () => {
+    const gateway = await serveWithKey('the-key');
+    try {
+      const response = await fetch(`${gateway.url}/v1/models`, {
+        headers: { 'x-api-key': 'the-key' },
+      });
+      expect(response.status).toBe(200);
+    } finally {
+      await gateway.close();
+    }
+  });
+
+  it('rejects the wrong key', async () => {
+    const gateway = await serveWithKey('the-key');
+    try {
+      const response = await fetch(`${gateway.url}/v1/models`, {
+        headers: { authorization: 'Bearer wrong' },
+      });
+      expect(response.status).toBe(401);
+    } finally {
+      await gateway.close();
+    }
+  });
+
+  it('protects /status on top of the loopback rule — both gates apply', async () => {
+    const gateway = await serveWithKey('the-key');
+    try {
+      const ok = await fetch(`${gateway.url}/status`, {
+        headers: { authorization: 'Bearer the-key' },
+      });
+      expect(ok.status).toBe(200);
+      const none = await fetch(`${gateway.url}/status`);
+      expect(none.status).toBe(401);
+    } finally {
+      await gateway.close();
+    }
+  });
+
+  it('does not let a valid key bypass the loopback-only rule', async () => {
+    const port = await freePort();
+    const registry = createAdapterRegistry([createCustomAdapter({ logger })]);
+    const config = parseConfig(
+      registry,
+      `server: { host: 0.0.0.0, port: ${port} }\nmodels: {}`,
+      fakeLocation(),
+    );
+    const service = createDockService({ config, registry, logger });
+    const server = createGateway({ service, logger, host: '0.0.0.0', port, apiKey: 'the-key' });
+    await new Promise<void>((resolve) => server.listen(port, '127.0.0.1', resolve));
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/status`, {
+        headers: { authorization: 'Bearer the-key' },
+      });
+      expect(response.status).toBe(403);
+      const body = (await response.json()) as { error: { code: string } };
+      expect(body.error.code).toBe('loopback_only');
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await service.shutdown();
+    }
+  });
+
+  it('strips its own key before proxying, and injects the runtime’s configured credential instead', async () => {
+    const gatewayPort = await freePort();
+    const runtimePort = await freePort();
+    process.env.LRD_TEST_UPSTREAM_KEY = 'upstream-secret';
+    try {
+      const registry = createAdapterRegistry([createCustomAdapter({ logger })]);
+      const config = parseConfig(
+        registry,
+        `
+server: { host: 127.0.0.1, port: ${gatewayPort} }
+runtimes:${runtime(
+          'alpha',
+          'alpha-model',
+          runtimePort,
+          '\n    surfaces: [openai]\n    auth: { api_key_env: LRD_TEST_UPSTREAM_KEY }',
+        )}
+models:${entry('alpha', 'alpha-model')}
+`,
+        fakeLocation(),
+      );
+      const service = createDockService({ config, registry, logger, readyTimeoutMs: 15_000 });
+      const gateway = await startGateway({ service, logger, apiKey: 'the-gateway-key' });
+      try {
+        const response = await fetch(`${gateway.url}/v1/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            authorization: 'Bearer the-gateway-key',
+          },
+          body: JSON.stringify({ model: 'alpha', messages: [] }),
+        });
+        expect(response.status).toBe(200);
+        const body = (await response.json()) as { received_authorization: string | null };
+        // Not the gateway's own key — that was consumed at the door — but the
+        // runtime's own configured credential, injected server-side.
+        expect(body.received_authorization).toBe('Bearer upstream-secret');
+      } finally {
+        await gateway.close();
+      }
+    } finally {
+      delete process.env.LRD_TEST_UPSTREAM_KEY;
+    }
+  });
+});

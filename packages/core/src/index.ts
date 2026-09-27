@@ -17,5 +17,6 @@ export * from './proxy.js';
 export * from './registry.js';
 export * from './resolution.js';
 export * from './scheduler.js';
+export * from './server-auth.js';
 export * from './service.js';
 export * from './types.js';

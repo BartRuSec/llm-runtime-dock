@@ -98,6 +98,36 @@ describe('opencode integration', () => {
     expect(content).toContain('{env:MY_KEY}');
   });
 
+  it('writes the gateway’s own key as an env reference, ahead of a model’s upstream credential', async () => {
+    const { content } = await agent.render(
+      plan(null, {
+        gatewayApiKeyEnv: 'LRD_API_KEY',
+        gatewayApiKey: 'resolved-value',
+        models: [
+          {
+            id: 'coding-quality',
+            name: 'Qwen3.8-27B',
+            contextLimit: undefined,
+            outputLimit: undefined,
+            // An upstream credential a model still declares — superseded once
+            // the gateway requires its own key (§28): one credential slot, one
+            // job.
+            apiKeyEnv: 'UPSTREAM_KEY',
+          },
+        ],
+      }),
+    );
+    expect(content).toContain('{env:LRD_API_KEY}');
+    expect(content).not.toContain('UPSTREAM_KEY');
+  });
+
+  it('falls back to a literal gateway key when it has no variable name to reference', async () => {
+    const { content } = await agent.render(
+      plan(null, { gatewayApiKeyEnv: undefined, gatewayApiKey: 'resolved-value' }),
+    );
+    expect(content).toContain('"resolved-value"');
+  });
+
   it('merges into an existing jsonc file, keeping comments and other providers', async () => {
     const existing = `{
   // my own note

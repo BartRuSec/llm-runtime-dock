@@ -18,7 +18,7 @@ z.config(en());
  * stay `unknown` here: only the owning adapter knows what they mean (§6).
  */
 
-const authSchema = z
+export const authSchema = z
   .object({
     api_key_env: z.string().min(1).optional(),
     api_key_file: z.string().min(1).optional(),
@@ -144,6 +144,13 @@ export const serverSchema = z
         error: 'expected a duration such as 60m, 1h, 90s or a number of milliseconds',
       })
       .optional(),
+    /**
+     * The gateway's own inbound credential (§28) — distinct from a runtime's
+     * `auth:`, which LRD sends *upstream*. This one is required of LRD's own
+     * clients. Same dual-mode shape, so a Docker deployment can point it at an
+     * env var the orchestrator injects, exactly as a runtime credential would.
+     */
+    auth: authSchema.optional(),
   })
   .strict();
 

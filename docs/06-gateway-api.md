@@ -40,7 +40,7 @@ Support:
 - request cancellation where possible
 - request IDs
 - upstream error propagation with normalized gateway errors
-- verbatim passthrough of the client's `Authorization` header to the upstream runtime ([§12](05-configuration.md#configuration))
+- verbatim passthrough of the client's `Authorization` header to the upstream runtime, when the gateway's own key ([§28](01-overview.md#security)) did not just consume it for that hop ([§12](05-configuration.md#configuration))
 
 #### Two protocols, one gateway
 
@@ -62,6 +62,28 @@ Responses are filtered by **denylist, not allowlist**: the hop-by-hop set plus `
 
 The one rename: the upstream's `x-request-id` is forwarded as `x-upstream-request-id`, because the gateway stamps its own `x-request-id` and both are worth correlating.
 
+#### Gateway authentication
+
+When `server.auth` resolves to a key ([§28](01-overview.md#security)), every
+route but `/health` requires it — `/v1/models` and the two lifecycle endpoints
+below included. A client presents it as `Authorization: Bearer <key>` or
+`x-api-key: <key>`; both are accepted, since this gateway proxies both an
+OpenAI-shaped and an Anthropic-shaped surface, and their conventional SDKs use
+different header names. A missing or wrong key answers `401` with
+`error.code: "unauthorized"`, answered directly rather than through the
+`GatewayErrorCode` namespace — the same reasoning as the loopback refusal
+below: neither code space has a member that means "you never authenticated to
+me," and reusing one would read as a transient, retryable condition.
+
+The header consumed here is stripped before the request reaches
+`proxyRequest`: a client's own key must never ride on to the runtime as if it
+were that runtime's configured credential, and the runtime's own `auth` block
+([§12](05-configuration.md#configuration)) is what supplies one instead, exactly
+as it would if the client had sent nothing at all.
+
+A valid key does not unlock `/status`/`/switch` from a non-loopback peer — see
+below. The two checks are independent, and both must pass.
+
 #### `/status` and `/switch`
 
 `GET /status` reports what the gateway is doing: whether it is running, which entry holds the resident slot, that entry's adapter, backend model, ownership and release mechanism, its state, and the queue depth. `lastRelease` carries the previous occupant, how it was freed, and **why** — `switch`, `idle` or `shutdown` ([§26](03-lifecycle.md#observability), [§29](03-lifecycle.md#memory--resource-policy)) — which is what lets a caller tell an empty slot that has never been filled apart from one an idle window emptied. It is the source of truth for `lrd status` ([§27](10-cli.md#cli)).
@@ -72,7 +94,7 @@ It must go through the scheduler, exactly like a request-triggered switch ([§9]
 
 A request arriving mid-switch behaves as it always does — served if its entry ends up holding the slot, queued otherwise. `/switch` changes who wins the slot next, not the rules.
 
-Both endpoints are lifecycle controls and bind to loopback only ([§28](01-overview.md#security)).
+Both endpoints are lifecycle controls and bind to loopback only, regardless of whether an API key is configured ([§28](01-overview.md#security)).
 
 #### `--debug`: what was actually forwarded
 

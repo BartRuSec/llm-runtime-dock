@@ -76,9 +76,18 @@ export const createClaudeIntegration = (options: ClaudeOptions = {}): AgentInteg
     // Merge: every key the gateway does not own survives untouched.
     const env: Record<string, unknown> = { ...previousEnv };
     env.ANTHROPIC_BASE_URL = plan.gatewayBaseUrl;
-    // The gateway listens on loopback without authentication, so the agent needs
-    // no credential. An empty string stops Claude Code prompting for one.
-    if (typeof env.ANTHROPIC_API_KEY !== 'string') env.ANTHROPIC_API_KEY = '';
+    if (plan.gatewayApiKey !== undefined) {
+      // The gateway requires its own key (§28). `settings.json`'s `env` block
+      // has no reference syntax — Claude Code exports these as literal strings
+      // — so the resolved value is written directly, always overwriting: a
+      // stale key here would silently start failing every request after a
+      // rotation (`lrd key generate --force`).
+      env.ANTHROPIC_API_KEY = plan.gatewayApiKey;
+    } else if (typeof env.ANTHROPIC_API_KEY !== 'string') {
+      // No gateway auth configured, so the agent needs no credential. An empty
+      // string stops Claude Code prompting for one.
+      env.ANTHROPIC_API_KEY = '';
+    }
     for (const [role, modelId] of Object.entries(plan.roles)) {
       const key = ROLE_ENV[role];
       if (key) env[key] = modelId;

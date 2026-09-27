@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import type { DockService, Logger, RequestTap, UpstreamPath } from '@llm-runtime-dock/core';
 import { gatewayError, nullLogger } from '@llm-runtime-dock/core';
 import { toErrorResponse } from './errors.js';
@@ -25,6 +25,13 @@ export interface GatewayOptions {
    * which is the very thing the capture exists to check.
    */
   readonly tap?: RequestTap;
+  /**
+   * The gateway's own inbound credential (§28), already resolved — this package
+   * stays free of config/env/file concerns, exactly as it already receives
+   * `host` pre-resolved. `undefined` means the gateway requires nothing, which
+   * is the default on a loopback bind.
+   */
+  readonly apiKey?: string;
 }
 
 export interface RunningGateway {
@@ -65,9 +72,10 @@ export const createGateway = (options: GatewayOptions): Server => {
   const logger = options.logger ?? nullLogger;
   const bindHost = options.host ?? service.config.server.host;
   const tap = options.tap;
+  const apiKey = options.apiKey;
 
   return createServer((req, res) => {
-    void handle(req, res, service, logger, bindHost, tap).catch((error: unknown) => {
+    void handle(req, res, service, logger, bindHost, tap, apiKey).catch((error: unknown) => {
       const { status, body } = toErrorResponse(error);
       if (!res.headersSent) {
         res.writeHead(status, { 'content-type': 'application/json' });
@@ -84,6 +92,7 @@ const handle = async (
   logger: Logger,
   bindHost: string,
   tap: RequestTap | undefined,
+  apiKey: string | undefined,
 ): Promise<void> => {
   const requestId = headerValue(req, 'x-request-id') ?? randomUUID();
   const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
@@ -93,6 +102,16 @@ const handle = async (
 
   if (method === 'GET' && (path === '/health' || path === '/healthz')) {
     sendJson(res, 200, { status: 'ok', service: 'llm-runtime-dock' });
+    return;
+  }
+
+  // Every other route requires the gateway's own key when one is configured
+  // (§28) — including /v1/models and the lifecycle controls below. A leaked key
+  // still does not reach them from a non-loopback peer: that refusal is
+  // separate and unconditional, checked next.
+  const refusal = authRefusal(req, apiKey);
+  if (refusal) {
+    sendJson(res, 401, refusal, { 'www-authenticate': 'Bearer' });
     return;
   }
 
@@ -107,9 +126,9 @@ const handle = async (
     // A refusal is answered directly rather than through the gateway error
     // namespace: none of those codes means "forbidden", and reusing one would
     // read as a transient condition to a client that should simply stop asking.
-    const refusal = loopbackRefusal(req, bindHost, path);
-    if (refusal) {
-      sendJson(res, 403, refusal);
+    const loopback = loopbackRefusal(req, bindHost, path);
+    if (loopback) {
+      sendJson(res, 403, loopback);
       return;
     }
     if (method === 'GET' && path === '/status') {
@@ -140,7 +159,12 @@ const handle = async (
       });
       return;
     }
-    await proxy(req, res, service, logger, upstreamPath, requestId, tap);
+    // Strip the header this hop just consumed, so it never rides on to the
+    // runtime as if the client had supplied an upstream credential itself
+    // (§12 forwards a client's own Authorization/x-api-key verbatim; once the
+    // gateway owns that header for its own auth, the runtime's *own* configured
+    // credential — resolved server-side — is what belongs there instead).
+    await proxy(req, res, service, logger, upstreamPath, requestId, tap, apiKey !== undefined);
     return;
   }
 
@@ -163,6 +187,7 @@ const proxy = async (
   path: UpstreamPath,
   requestId: string,
   tap: RequestTap | undefined,
+  stripAuthHeaders: boolean,
 ): Promise<void> => {
   const body = await readBody(req);
   const controller = new AbortController();
@@ -177,7 +202,7 @@ const proxy = async (
   const response = await service.proxy({
     path,
     body,
-    headers: forwardableHeaders(req),
+    headers: forwardableHeaders(req, stripAuthHeaders),
     signal: controller.signal,
     requestId,
   });
@@ -266,13 +291,67 @@ const loopbackRefusal = (
   if (!isLoopbackAddress(bindHost)) {
     return refuse(
       `${path} is a lifecycle control and is refused while the gateway is bound to ${bindHost}. ` +
-        'Bind to 127.0.0.1: the MVP has no authentication for remote lifecycle control.',
+        'Bind to 127.0.0.1: an API key (§28) does not lift this — lifecycle control stays loopback-only.',
     );
   }
   if (!isLoopbackAddress(req.socket.remoteAddress ?? undefined)) {
     return refuse(`${path} is available on loopback only`);
   }
   return null;
+};
+
+interface AuthFailureBody {
+  error: {
+    message: string;
+    type: 'authentication_error';
+    code: 'unauthorized';
+    param: null;
+  };
+}
+
+/**
+ * The gateway's own inbound credential check (§28). Answered directly rather
+ * than through the gateway error namespace, for the same reason
+ * `loopbackRefusal` is: no existing `GatewayErrorCode` means "you never
+ * authenticated to me", and reusing one would read as a transient condition to
+ * a client that should simply stop asking.
+ *
+ * Accepts either `Authorization: Bearer <key>` or `x-api-key: <key>` — this
+ * gateway serves the Anthropic-shaped surface too, and Anthropic SDKs send the
+ * latter, so a Bearer-only check would leave that client shape unable to
+ * authenticate at all.
+ */
+const authRefusal = (req: IncomingMessage, apiKey: string | undefined): AuthFailureBody | null => {
+  if (apiKey === undefined) return null;
+  const presented = presentedApiKey(req);
+  if (presented === undefined || !safeEqual(presented, apiKey)) {
+    return {
+      error: {
+        message: 'missing or invalid API key',
+        type: 'authentication_error',
+        code: 'unauthorized',
+        param: null,
+      },
+    };
+  }
+  return null;
+};
+
+const presentedApiKey = (req: IncomingMessage): string | undefined => {
+  const bearer = headerValue(req, 'authorization');
+  if (bearer?.toLowerCase().startsWith('bearer ')) return bearer.slice(7).trim();
+  return headerValue(req, 'x-api-key');
+};
+
+/**
+ * Constant-time comparison. Digesting first, rather than comparing the raw
+ * strings, sidesteps `timingSafeEqual`'s equal-length requirement and avoids
+ * leaking the configured key's length through a length-mismatch throw.
+ */
+const safeEqual = (a: string, b: string): boolean => {
+  const left = createHash('sha256').update(a).digest();
+  const right = createHash('sha256').update(b).digest();
+  return timingSafeEqual(left, right);
 };
 
 const parseSwitchBody = (body: string): string => {
@@ -289,10 +368,24 @@ const parseSwitchBody = (body: string): string => {
   throw gatewayError('MODEL_NOT_FOUND', '/switch expects a JSON body with a "model" field');
 };
 
-const forwardableHeaders = (req: IncomingMessage): Record<string, string | undefined> => {
+/**
+ * `stripAuthHeaders` is true whenever the gateway itself just consumed
+ * `authorization`/`x-api-key` for its own auth gate (§28) — see the comment at
+ * the `proxy()` call site for why those must not also reach the runtime.
+ */
+const forwardableHeaders = (
+  req: IncomingMessage,
+  stripAuthHeaders: boolean,
+): Record<string, string | undefined> => {
   const headers: Record<string, string | undefined> = {};
   for (const [name, value] of Object.entries(req.headers)) {
     if (value === undefined) continue;
+    if (
+      stripAuthHeaders &&
+      (name.toLowerCase() === 'authorization' || name.toLowerCase() === 'x-api-key')
+    ) {
+      continue;
+    }
     headers[name] = Array.isArray(value) ? value.join(', ') : value;
   }
   return headers;
@@ -309,9 +402,14 @@ const readBody = async (req: IncomingMessage): Promise<string> => {
   return Buffer.concat(chunks).toString('utf8');
 };
 
-const sendJson = (res: ServerResponse, status: number, body: unknown): void => {
+const sendJson = (
+  res: ServerResponse,
+  status: number,
+  body: unknown,
+  headers?: Record<string, string>,
+): void => {
   if (res.headersSent) return;
-  res.writeHead(status, { 'content-type': 'application/json' });
+  res.writeHead(status, { 'content-type': 'application/json', ...headers });
   res.end(JSON.stringify(body));
 };
 

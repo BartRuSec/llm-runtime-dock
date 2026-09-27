@@ -41,6 +41,8 @@ server:
   host: 127.0.0.1
   port: 8787
   idle_unload: 60m
+  # auth:
+  #   api_key_env: LRD_API_KEY   # see "Gateway authentication" below
 
 runtimes:
   mtplx:
@@ -105,10 +107,11 @@ models:
 
 The `server:` block:
 
-| field           | meaning                                                                                                          |
-| --------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `host` / `port` | where the gateway itself listens. Defaults to `127.0.0.1:8787`; `--host`/`--port` on `lrd serve` override it     |
-| `idle_unload`   | release the rotating occupant after this long with nothing to do (below). Defaults to `60m`; `0` switches it off |
+| field           | meaning                                                                                                                                                                                                                    |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `host` / `port` | where the gateway itself listens. Defaults to `127.0.0.1:8787`; `--host`/`--port` on `lrd serve` override it                                                                                                               |
+| `idle_unload`   | release the rotating occupant after this long with nothing to do (below). Defaults to `60m`; `0` switches it off                                                                                                           |
+| `auth`          | the gateway's own inbound credential ([§28](01-overview.md#security)) — `api_key_env` or `api_key_file`, same shape as a runtime's `auth`. Absent, `LRD_API_KEY` is checked out of the box; `lrd key generate` writes this |
 
 A declared runtime:
 
@@ -344,6 +347,22 @@ auth:
 - Credentials are never logged and never appear in `examples/config.yaml` ([§28](01-overview.md#security)).
 - An upstream 401/403 maps to `UPSTREAM_UNAUTHORIZED`, not to a generic failure.
 
+#### Gateway authentication
+
+Distinct from the above: `server.auth` is the credential LRD requires of _its own_ clients, not one it sends onward. Same shape:
+
+```yaml
+server:
+  auth:
+    api_key_env: LRD_API_KEY
+    # or: api_key_file: ~/.config/llm-runtime-dock/api_key
+```
+
+- Absent `server.auth`, the `LRD_API_KEY` environment variable is checked automatically — no configuration needed for a Docker or systemd deployment that already injects it. An explicit `server.auth` overrides this outright; it is not an additional source consulted alongside it.
+- `lrd key generate` writes this block: by default to a dedicated file (`api_key_file`, restrictive permissions where the platform supports them); `--env [NAME]` instead prints the key once and writes `api_key_env: NAME`, for a secret managed outside the YAML file.
+- An `api_key_env`/`api_key_file` that is configured but resolves to nothing is a hard failure at `lrd serve` — unlike a runtime's own `auth`, there is no client-supplied fallback to fall back to, so silently starting unauthenticated would defeat the point.
+- Once set, `lrd apply` ([§23](08-agents.md#agent-integrations)) wires it into every agent it configures, superseding the per-model upstream forwarding for that one credential slot.
+
 ### The example configuration
 
 `examples/config.yaml` is part of the contract, not a scratch file. It must:
@@ -352,10 +371,10 @@ auth:
   an obvious placeholder;
 - cover both `options` and `extra_args`, so the difference between a curated
   option and the raw argv escape hatch is visible without reading this document;
-- contain no secret, and reference **no `api_key_file`**. It demonstrates
-  `api_key_env` only: a path to a key file on the author's machine is not a
-  credential, but it is a working example of the one habit this project does not
-  want to teach.
+- contain no secret, and reference **no `api_key_file`** — for a runtime's own
+  `auth` or for `server.auth`. It demonstrates `api_key_env` only: a path to a
+  key file on the author's machine is not a credential, but it is a working
+  example of the one habit this project does not want to teach.
 
 `lrd doctor --config examples/config.yaml` must pass against it.
 

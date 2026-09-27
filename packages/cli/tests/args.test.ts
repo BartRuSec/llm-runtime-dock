@@ -66,6 +66,7 @@ describe('command surface', () => {
       'probe',
       'apply',
       'doctor',
+      'key',
       'models',
       'runtimes',
       'switch',

@@ -1,4 +1,11 @@
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname } from 'node:path';
 
 /** File helpers shared by the config writer and the agent apply path. */
@@ -23,4 +30,21 @@ export const backupFile = (path: string, now: Date = new Date()): string | null 
 export const writeTextFile = (path: string, contents: string): void => {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, contents, 'utf8');
+};
+
+/**
+ * Write a secret to disk with restrictive permissions, best effort.
+ *
+ * `mode` on `writeFileSync` only applies when the file is created; `chmodSync`
+ * afterward covers the case where it already existed. Windows has no POSIX
+ * permission bits, so a failure there is swallowed rather than surfaced.
+ */
+export const writeSecretFile = (path: string, contents: string): void => {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, contents, { encoding: 'utf8', mode: 0o600 });
+  try {
+    chmodSync(path, 0o600);
+  } catch {
+    // Best effort only — see above.
+  }
 };

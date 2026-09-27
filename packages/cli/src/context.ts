@@ -32,6 +32,7 @@ import {
   createLogger,
   loadConfig,
   resolveConfigLocation,
+  tryResolveServerAuthKey,
 } from '@llm-runtime-dock/core';
 
 /**
@@ -112,6 +113,13 @@ export interface CliContext {
   loadConfig(options?: { readonly quiet?: boolean }): DockConfig;
   /** The base URL of a running gateway: `--endpoint`, else the configured one. */
   gatewayEndpoint(config?: DockConfig): string;
+  /**
+   * The gateway's own inbound key (§28), for a CLI command that is itself a
+   * gateway client (`status`, `switch`). Never throws — a misconfigured
+   * `server.auth` should not crash a command whose job is to report on the
+   * gateway; the gateway's own 401 already says what is wrong.
+   */
+  resolveServerApiKey(config?: DockConfig): string | undefined;
   agent(id: string): AgentIntegration;
   /**
    * Ask which model a role should use, or `null` when this run cannot ask —
@@ -206,6 +214,8 @@ export const createCliContext = (deps: CliDeps, options: GlobalOptions): CliCont
       if (config) return `http://${config.server.host}:${config.server.port}`;
       return 'http://127.0.0.1:8787';
     },
+
+    resolveServerApiKey: (config) => tryResolveServerAuthKey(config, env),
 
     rolePrompt: deps.rolePrompt ?? (canPrompt(options.json) ? interactiveRolePrompt : null),
 

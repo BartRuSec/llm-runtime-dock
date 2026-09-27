@@ -131,11 +131,15 @@ If comments or key order cannot be preserved through a rewrite, warn before writ
 
 Existing providers that point straight at a backend are left alone. Bypassing the gateway is a legitimate thing for a user to have configured, and removing it is their call, not the tool's.
 
-#### Never write a secret
+#### Never write a secret — except the one the agent must present
 
-If a model entry carries `auth` ([§12](05-configuration.md#configuration)), apply writes an **environment-variable reference** where the agent's format supports one, and refuses with an explanation where it does not. It never resolves the variable and inlines the value.
+If a model entry carries `auth` ([§12](05-configuration.md#configuration)), apply writes an **environment-variable reference** where the agent's format supports one, and refuses with an explanation where it does not. It never resolves that variable and inlines the value.
 
-On the common path there is no credential at all: the gateway listens on loopback without authentication, so the agent needs none to reach it.
+On the common path there is no credential at all: the gateway listens on loopback with no key required, so the agent needs none to reach it.
+
+Where the gateway itself requires a key (`server.auth`, [§28](01-overview.md#security)), that is the one exception to "never inline a secret": the agent must present it to reach the gateway at all, so apply writes it into the same client-facing slot each format uses for an upstream credential — superseding the per-model forwarding above, since the gateway now injects that server-side instead. OpenCode and Codex still get a reference (`{env:VAR}` / `env_key`) when the key has a variable name; Claude Code's `settings.json` has no reference syntax at all, so it gets the resolved value written literally regardless. A key with no variable name — one `lrd key generate` wrote into a file rather than an env var — cannot be expressed as Codex's `env_key`, and apply refuses with `AGENT_SECRET_UNSUPPORTED` rather than guessing.
+
+Apply still backs up a file it is about to overwrite even when that file carries this literal key — the backup rule ([§23](08-agents.md#agent-integrations)) has no exception — but when the new content, or the version already on disk, holds one, the command warns about it: naming the file when there was nothing to back up yet, or the backup's own path plus a note that it is a plaintext copy of the key. `lrd key generate`'s own secret file is the only thing in this project that is deliberately never backed up; everywhere else, including here, a backup happens and the risk is surfaced instead of hidden.
 
 #### Per-agent shapes
 
@@ -187,6 +191,8 @@ base_url = "http://127.0.0.1:8787/v1"
 ```
 
 Claude Code has no provider concept; roles are the model selection. That is why `agents.claude` names roles while the others name a default.
+
+`ANTHROPIC_API_KEY` is `""` only while no gateway key is configured — an empty string stops Claude Code prompting for one. Once `server.auth` resolves, this is the one place apply writes a literal secret, always overwriting so a rotated key (`lrd key generate --force`) does not go stale.
 
 #### Failure cases
 
