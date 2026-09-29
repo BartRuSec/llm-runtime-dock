@@ -136,11 +136,13 @@ Default:
 host: 127.0.0.1
 ```
 
-No authentication is required for a loopback bind.
+No authentication is required for a loopback bind unless `server.auth` is set, or the `LRD_API_KEY` environment variable happens to be, out of the box.
 
-`/status` and `/switch` ([§14](06-gateway-api.md#gateway-api)) are lifecycle controls. They bind to loopback only, and must be refused outright when the gateway is bound to a non-loopback address, unless authentication exists — which this release does not have.
+The gateway can require an API key of its own clients (`server.auth`, [§12](05-configuration.md#configuration), enforced in [§14](06-gateway-api.md#gateway-api)) — a separate concern from the per-runtime `auth:` block, which is a credential LRD sends _upstream_. When a key is configured it is required on every route except `/health`, including `/v1/models` and the lifecycle controls. It does not replace the rule below: a valid key never lifts the loopback-only restriction on `/status`/`/switch`, since a leaked key must not hand out remote process control on top of remote inference.
 
-Applying configuration to a coding agent writes into files the user owns. It merges rather than replaces, backs up first, and never writes a credential value — only an environment-variable reference where the format allows one ([§23](08-agents.md#agent-integrations)).
+`/status` and `/switch` ([§14](06-gateway-api.md#gateway-api)) are lifecycle controls. They bind to loopback only, and are refused outright when the gateway is bound to a non-loopback address, whether or not an API key is configured.
+
+Applying configuration to a coding agent writes into files the user owns. It merges rather than replaces, backs up first, and never writes a credential value except where the format has no alternative — an agent whose configuration format can only hold a literal string (Claude Code's `settings.json`) receives the gateway's own resolved key that way, since the whole reason the key exists is for that agent to present it back; every format that can reference a value by environment variable does that instead ([§23](08-agents.md#agent-integrations)).
 
 Discovery writes configuration from data a server returned over HTTP. That is permitted at configuration time and only on an explicit flag, under the constraints in [§22](07-discovery.md#runtime-discovery). It is never permitted at request time.
 
@@ -149,12 +151,12 @@ Never:
 - execute arbitrary commands supplied through HTTP;
 - concatenate request values into shell commands;
 - expose lifecycle controls publicly by default;
-- serve `/status` or `/switch` on a non-loopback bind;
+- serve `/status` or `/switch` on a non-loopback bind, API key or not;
 - log secrets;
 - put API keys/passwords into example configs;
-- inline a resolved secret into a coding agent's configuration.
+- inline a resolved secret into a coding agent's configuration, except where the format has no way to reference one instead.
 
-If remote binding is later supported, authentication/authorization becomes mandatory before considering it production-ready.
+A non-loopback bind with no API key configured is a reported warning (`doctor`, and the `serve` startup banner), not a hard failure: an operator who deliberately runs the gateway open must not be blocked, but the gap must be impossible to miss.
 
 ---
 

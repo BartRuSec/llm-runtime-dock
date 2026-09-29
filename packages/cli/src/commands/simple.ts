@@ -10,7 +10,7 @@ import { columns, keyValue, labelWidth } from '../output.js';
 export const runStatus = async (context: CliContext): Promise<void> => {
   const config = tryLoadConfig(context);
   const endpoint = context.gatewayEndpoint(config ?? undefined);
-  const status = await fetchStatus(endpoint);
+  const status = await fetchStatus(endpoint, context.resolveServerApiKey(config ?? undefined));
 
   if (context.options.json) {
     context.json(status);
@@ -23,7 +23,11 @@ export const runStatus = async (context: CliContext): Promise<void> => {
 export const runSwitch = async (context: CliContext, model: string): Promise<void> => {
   const config = tryLoadConfig(context);
   const endpoint = context.gatewayEndpoint(config ?? undefined);
-  const status = await requestSwitch(endpoint, model);
+  const status = await requestSwitch(
+    endpoint,
+    model,
+    context.resolveServerApiKey(config ?? undefined),
+  );
 
   if (context.options.json) {
     context.json(status);
@@ -217,7 +221,7 @@ const liveState = async (
   config: DockConfig,
 ): Promise<GatewayStatus | null> => {
   try {
-    return await fetchStatus(context.gatewayEndpoint(config));
+    return await fetchStatus(context.gatewayEndpoint(config), context.resolveServerApiKey(config));
   } catch {
     return null;
   }

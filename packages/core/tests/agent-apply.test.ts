@@ -238,3 +238,143 @@ describe('applyAgent', () => {
     expect(existsSync(path)).toBe(false);
   });
 });
+
+/**
+ * The gateway's own inbound key (§28) threads through `ApplyPlan` alongside
+ * `gatewayBaseUrl` — a different hop than `AgentModelPlan.apiKeyEnv`, which
+ * `applyAgent` above already covers. `env` is always passed explicitly so
+ * these never depend on the real process environment.
+ */
+describe('gateway API-key wiring', () => {
+  const withServerAuth = (auth: string, env: NodeJS.ProcessEnv) =>
+    parseConfig(
+      registry(),
+      `
+server: { host: 127.0.0.1, port: 8787${auth} }
+runtimes:
+  stub: { adapter: stub, port: 8000 }
+models:
+  a: { runtime: stub, backend_model: Model-A }
+agents:
+  opencode: { default: a }
+`,
+      testLocation(),
+      env,
+    );
+
+  it('exposes the env var name without resolving a literal, for a reference-capable agent', async () => {
+    // The name is a config fact, not a secret, so a reference-capable format
+    // (OpenCode, Codex) must apply correctly even when this process cannot
+    // see the value itself — e.g. a Docker deployment injects it into the
+    // gateway's own container only. `env` deliberately omits the variable.
+    const config = withServerAuth(', auth: { api_key_env: MY_GATEWAY_KEY }', {});
+    const plan = await buildApplyPlan({
+      config,
+      registry: registry(),
+      agent: createStubAgent({
+        configPath: join(dir, 'agent.json'),
+        supportsSecretReference: true,
+      }),
+      existing: null,
+      env: {},
+    });
+    expect(plan.gatewayApiKeyEnv).toBe('MY_GATEWAY_KEY');
+    expect(plan.gatewayApiKey).toBeUndefined();
+  });
+
+  it('resolves the literal for an agent with no reference syntax at all', async () => {
+    const env = { MY_GATEWAY_KEY: 'super-secret' };
+    const config = withServerAuth(', auth: { api_key_env: MY_GATEWAY_KEY }', env);
+    const plan = await buildApplyPlan({
+      config,
+      registry: registry(),
+      agent: createStubAgent({
+        configPath: join(dir, 'agent.json'),
+        supportsSecretReference: false,
+      }),
+      existing: null,
+      env,
+    });
+    expect(plan.gatewayApiKeyEnv).toBe('MY_GATEWAY_KEY');
+    expect(plan.gatewayApiKey).toBe('super-secret');
+  });
+
+  it('resolves the literal for a reference-capable agent when the key has no variable name', async () => {
+    const keyFile = join(dir, 'api_key');
+    writeFileSync(keyFile, 'file-secret\n');
+    const config = withServerAuth(`, auth: { api_key_file: ${keyFile} }`, {});
+    const plan = await buildApplyPlan({
+      config,
+      registry: registry(),
+      agent: createStubAgent({
+        configPath: join(dir, 'agent.json'),
+        supportsSecretReference: true,
+      }),
+      existing: null,
+      env: {},
+    });
+    expect(plan.gatewayApiKeyEnv).toBeUndefined();
+    expect(plan.gatewayApiKey).toBe('file-secret');
+  });
+
+  it('leaves both undefined when no gateway key is configured', async () => {
+    const config = withServerAuth('', {});
+    const plan = await buildApplyPlan({
+      config,
+      registry: registry(),
+      agent: createStubAgent({ configPath: join(dir, 'agent.json') }),
+      existing: null,
+    });
+    expect(plan.gatewayApiKeyEnv).toBeUndefined();
+    expect(plan.gatewayApiKey).toBeUndefined();
+  });
+
+  it('exposes the OOTB LRD_API_KEY name the same way, with no server.auth block at all', async () => {
+    const config = withServerAuth('', { LRD_API_KEY: 'ootb-secret' });
+    const plan = await buildApplyPlan({
+      config,
+      registry: registry(),
+      agent: createStubAgent({
+        configPath: join(dir, 'agent.json'),
+        supportsSecretReference: true,
+      }),
+      existing: null,
+      env: {},
+    });
+    expect(plan.gatewayApiKeyEnv).toBe('LRD_API_KEY');
+    expect(plan.gatewayApiKey).toBeUndefined();
+  });
+
+  it('fails closed rather than silently applying, for an agent that needs the literal', async () => {
+    const config = withServerAuth(', auth: { api_key_env: UNSET_VAR } ', {});
+    await expect(
+      applyAgent({
+        config,
+        registry: registry(),
+        agent: createStubAgent({
+          configPath: join(dir, 'agent.json'),
+          supportsSecretReference: false,
+        }),
+        env: {},
+      }),
+    ).rejects.toMatchObject({ code: 'SERVER_AUTH_UNRESOLVED' });
+  });
+
+  it('does not fail closed for a reference-capable agent when the literal cannot resolve', async () => {
+    // OpenCode/Codex only need the variable *name* here — the value living
+    // solely in the gateway's own container (e.g. Docker) must not block them.
+    const config = withServerAuth(', auth: { api_key_env: UNSET_VAR } ', {});
+    const plan = await buildApplyPlan({
+      config,
+      registry: registry(),
+      agent: createStubAgent({
+        configPath: join(dir, 'agent.json'),
+        supportsSecretReference: true,
+      }),
+      existing: null,
+      env: {},
+    });
+    expect(plan.gatewayApiKeyEnv).toBe('UNSET_VAR');
+    expect(plan.gatewayApiKey).toBeUndefined();
+  });
+});

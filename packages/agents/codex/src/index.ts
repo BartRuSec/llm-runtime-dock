@@ -74,14 +74,35 @@ export const createCodexIntegration = (options: CodexOptions = {}): AgentIntegra
       name: PROVIDER_ID,
       base_url: `${plan.gatewayBaseUrl}/v1`,
     };
-    const mapped = plan.models.find((entry) => entry.id === model);
-    if (mapped?.apiKeyEnv) {
-      // A variable name, not a value (§23).
-      provider.env_key = mapped.apiKeyEnv;
+    if (plan.gatewayApiKeyEnv) {
+      // The gateway's own key (§28) claims this slot once configured — it is
+      // what Codex must present to reach the gateway at all, superseding the
+      // per-model upstream forwarding below (the gateway injects that
+      // credential server-side instead once its own auth is on).
+      provider.env_key = plan.gatewayApiKeyEnv;
+    } else if (plan.gatewayApiKey !== undefined) {
+      // `env_key` can only name a variable Codex itself reads; it has no
+      // adjacent literal-value field. A key with no variable name (one
+      // generated into a file via server.auth.api_key_file) cannot be expressed
+      // here at all.
+      throw cliError(
+        'AGENT_SECRET_UNSUPPORTED',
+        "the gateway requires an API key, and Codex's env_key can only reference one by environment variable — server.auth has no api_key_env to give it",
+        {
+          details: { agent: id },
+          hint: 'run `lrd key generate --env`, or set server.auth.api_key_env, so Codex can reference it',
+        },
+      );
     } else {
-      // Deleted rather than left: it names a credential this entry no longer
-      // has, so Codex would read an unset variable.
-      delete provider.env_key;
+      const mapped = plan.models.find((entry) => entry.id === model);
+      if (mapped?.apiKeyEnv) {
+        // A variable name, not a value (§23).
+        provider.env_key = mapped.apiKeyEnv;
+      } else {
+        // Deleted rather than left: it names a credential this entry no longer
+        // has, so Codex would read an unset variable.
+        delete provider.env_key;
+      }
     }
     providers[PROVIDER_ID] = provider;
 

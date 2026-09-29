@@ -88,15 +88,31 @@ export const createOpenCodeIntegration = (options: OpenCodeOptions = {}): AgentI
     content = setPath(content, [...base, 'name'], PROVIDER_NAME);
     content = setPath(content, [...base, 'options', 'baseURL'], `${plan.gatewayBaseUrl}/v1`);
 
-    const secretModel = plan.models.find((model) => model.apiKeyEnv !== undefined);
     const existingKey = previousApiKey(previous);
-    if (secretModel?.apiKeyEnv) {
-      // An environment-variable reference, never a resolved value (§23).
-      content = setPath(content, [...base, 'options', 'apiKey'], `{env:${secretModel.apiKeyEnv}}`);
-    } else if (typeof existingKey === 'string' && ENV_REFERENCE.test(existingKey)) {
-      // A reference apply wrote before and no entry needs any more is stale, so
-      // it goes; a literal the user typed is theirs and stays.
-      content = setPath(content, [...base, 'options', 'apiKey'], undefined);
+    if (plan.gatewayApiKeyEnv) {
+      // The gateway's own key (§28) claims this slot once configured: it is
+      // what OpenCode must present to reach the gateway at all, superseding the
+      // per-model upstream forwarding below (the gateway now injects that
+      // credential server-side instead — see apps/gateway's header stripping).
+      content = setPath(content, [...base, 'options', 'apiKey'], `{env:${plan.gatewayApiKeyEnv}}`);
+    } else if (plan.gatewayApiKey !== undefined) {
+      // No environment-variable name to reference — the key came from
+      // server.auth.api_key_file — so a literal is the only option left.
+      content = setPath(content, [...base, 'options', 'apiKey'], plan.gatewayApiKey);
+    } else {
+      const secretModel = plan.models.find((model) => model.apiKeyEnv !== undefined);
+      if (secretModel?.apiKeyEnv) {
+        // An environment-variable reference, never a resolved value (§23).
+        content = setPath(
+          content,
+          [...base, 'options', 'apiKey'],
+          `{env:${secretModel.apiKeyEnv}}`,
+        );
+      } else if (typeof existingKey === 'string' && ENV_REFERENCE.test(existingKey)) {
+        // A reference apply wrote before and no entry needs any more is stale,
+        // so it goes; a literal the user typed is theirs and stays.
+        content = setPath(content, [...base, 'options', 'apiKey'], undefined);
+      }
     }
 
     for (const model of plan.models) {

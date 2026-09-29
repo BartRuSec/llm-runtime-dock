@@ -19,10 +19,17 @@ const notRunning = (endpoint: string, cause?: unknown): CliError => {
   });
 };
 
-const request = async (endpoint: string, path: string, init: RequestInit): Promise<unknown> => {
+const request = async (
+  endpoint: string,
+  path: string,
+  init: RequestInit,
+  apiKey: string | undefined,
+): Promise<unknown> => {
+  const headers =
+    apiKey === undefined ? init.headers : { ...init.headers, authorization: `Bearer ${apiKey}` };
   let response: Response;
   try {
-    response = await fetch(`${endpoint}${path}`, init);
+    response = await fetch(`${endpoint}${path}`, { ...init, headers });
   } catch (cause) {
     throw notRunning(endpoint, cause);
   }
@@ -40,6 +47,13 @@ const request = async (endpoint: string, path: string, init: RequestInit): Promi
       `gateway at ${endpoint} refused the request: ${message}`,
       {
         details: { endpoint, status: response.status },
+        // §28: the one status this client-side wrapper can give a specific hint
+        // for, since it is not "the gateway is down" the way every other
+        // response here is treated.
+        hint:
+          response.status === 401
+            ? 'set server.auth (or LRD_API_KEY) so this command can authenticate, or run `lrd key generate`'
+            : undefined,
       },
     );
   }
@@ -53,14 +67,23 @@ const request = async (endpoint: string, path: string, init: RequestInit): Promi
   }
 };
 
-export const fetchStatus = async (endpoint: string): Promise<GatewayStatus> => {
-  return (await request(endpoint, '/status', { method: 'GET' })) as GatewayStatus;
+export const fetchStatus = async (endpoint: string, apiKey?: string): Promise<GatewayStatus> => {
+  return (await request(endpoint, '/status', { method: 'GET' }, apiKey)) as GatewayStatus;
 };
 
-export const requestSwitch = async (endpoint: string, model: string): Promise<GatewayStatus> => {
-  return (await request(endpoint, '/switch', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ model }),
-  })) as GatewayStatus;
+export const requestSwitch = async (
+  endpoint: string,
+  model: string,
+  apiKey?: string,
+): Promise<GatewayStatus> => {
+  return (await request(
+    endpoint,
+    '/switch',
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model }),
+    },
+    apiKey,
+  )) as GatewayStatus;
 };

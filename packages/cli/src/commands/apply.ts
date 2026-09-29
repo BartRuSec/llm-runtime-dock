@@ -46,6 +46,7 @@ export const runApply = async (
         agent,
         overrides: await resolveOverrides(context, config, agent, options),
         dryRun: options.dryRun === true,
+        env: context.env,
       });
       results.push(result);
       reportOne(context, agent, result, options.dryRun === true);

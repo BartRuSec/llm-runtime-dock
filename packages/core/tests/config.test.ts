@@ -526,3 +526,53 @@ describe('idle unload', () => {
     expectCliError(() => load(`server:\n  idle_unload: []\n${STUB}`), 'CONFIG_INVALID');
   });
 });
+
+/**
+ * `server.auth` (spec §28) — the gateway's own inbound credential, resolved
+ * separately from `LRD_API_KEY`. `parseConfig`'s `env` argument is passed
+ * explicitly throughout so these tests never depend on the real process
+ * environment.
+ */
+describe('server.auth', () => {
+  it('is undefined when absent and LRD_API_KEY is unset', () => {
+    const config = parseConfig(registry(), STUB, testLocation(), {});
+    expect(config.server.auth).toBeUndefined();
+  });
+
+  it('picks up LRD_API_KEY out of the box when nothing is configured', () => {
+    const config = parseConfig(registry(), STUB, testLocation(), { LRD_API_KEY: 'x' });
+    expect(config.server.auth).toEqual({ apiKeyEnv: 'LRD_API_KEY', source: 'default_env' });
+  });
+
+  it('an explicit server.auth wins over LRD_API_KEY', () => {
+    const config = parseConfig(
+      registry(),
+      `server:\n  auth: { api_key_env: MY_KEY }\n${STUB}`,
+      testLocation(),
+      { LRD_API_KEY: 'x' },
+    );
+    expect(config.server.auth).toEqual({
+      apiKeyEnv: 'MY_KEY',
+      apiKeyFile: undefined,
+      source: 'config',
+    });
+  });
+
+  it('accepts api_key_file, like a runtime auth block', () => {
+    const config = parseConfig(
+      registry(),
+      `server:\n  auth: { api_key_file: ~/key }\n${STUB}`,
+      testLocation(),
+      {},
+    );
+    expect(config.server.auth).toEqual({
+      apiKeyEnv: undefined,
+      apiKeyFile: '~/key',
+      source: 'config',
+    });
+  });
+
+  it('requires api_key_env or api_key_file, like a runtime auth block', () => {
+    expectCliError(() => load(`server:\n  auth: {}\n${STUB}`), 'CONFIG_INVALID');
+  });
+});
