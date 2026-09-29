@@ -75,6 +75,10 @@ AGENT_NOT_INSTALLED
 AGENT_SURFACE_UNSUPPORTED
 AGENT_SECRET_UNSUPPORTED
 AGENT_CONFIG_UNREADABLE
+SERVER_AUTH_UNRESOLVED
+SERVER_KEY_ALREADY_CONFIGURED
 ```
+
+`AGENT_SECRET_UNSUPPORTED` also covers a second case since [§28](01-overview.md#security): a gateway key with no variable name to reference (one `lrd key generate` wrote into a file rather than an env var), applied to an agent whose format has no adjacent literal-secret field — Codex's `env_key`, currently. `SERVER_AUTH_UNRESOLVED` is the fail-closed case for `server.auth` itself: an explicit `api_key_env`/`api_key_file` that resolves to nothing, raised by `lrd serve`, `lrd doctor` and `lrd apply` alike whenever the credential a command needs cannot be found — never by the OOTB `LRD_API_KEY` default, whose absence just means auth is off. `SERVER_KEY_ALREADY_CONFIGURED` is `lrd key generate` refusing to overwrite an existing `server.auth` without `--force`.
 
 Configuration errors reach the gateway too — it refuses to start on them — but they are reported at load time, not as a response to a request.

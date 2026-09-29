@@ -359,3 +359,176 @@ agents:
     expect(readFileSync(first.path, 'utf8')).toBe(contents);
   });
 });
+
+/**
+ * `apply` wiring the gateway's own key (§28) into all three real agent
+ * formats — the direct answer to "does `lrd apply` still work once the
+ * gateway requires an API key."
+ */
+describe('apply wires the gateway’s own key', () => {
+  let dir: ReturnType<typeof tempDir>;
+  beforeEach(() => {
+    dir = tempDir();
+  });
+  afterEach(() => dir.cleanup());
+
+  const withGatewayAuth = (auth: string): DockConfig =>
+    parseConfig(
+      registry,
+      `
+server: { host: 127.0.0.1, port: 8787${auth} }
+runtimes:
+  mtplx: { adapter: mtplx, port: 8000 }
+models:
+  coding-quality:
+    runtime: mtplx
+    backend_model: Qwen3.8-27B
+agents:
+  opencode: { default: coding-quality }
+  codex: { model: coding-quality }
+  claude: { opus: coding-quality, sonnet: coding-quality, haiku: coding-quality }
+`,
+      fakeLocation(),
+    );
+
+  it('OpenCode references it by environment variable', async () => {
+    const configDir = join(dir.path, 'opencode');
+    mkdirSync(configDir, { recursive: true });
+    const result = await applyAgent({
+      config: withGatewayAuth(', auth: { api_key_env: MY_GW_KEY }'),
+      registry,
+      agent: createOpenCodeIntegration({ configDir }),
+      skipInstalledCheck: true,
+      env: { MY_GW_KEY: 'the-actual-secret' },
+    });
+    const written = JSON.parse(readFileSync(result.path, 'utf8')) as {
+      provider: Record<string, { options: { apiKey: string } }>;
+    };
+    expect(written.provider['llm-runtime-dock']?.options.apiKey).toBe('{env:MY_GW_KEY}');
+  });
+
+  it('Codex references it by environment variable', async () => {
+    const configDir = join(dir.path, 'codex');
+    mkdirSync(configDir, { recursive: true });
+    const result = await applyAgent({
+      config: withGatewayAuth(', auth: { api_key_env: MY_GW_KEY }'),
+      registry,
+      agent: createCodexIntegration({ configDir }),
+      skipInstalledCheck: true,
+      env: { MY_GW_KEY: 'the-actual-secret' },
+    });
+    expect(readFileSync(result.path, 'utf8')).toContain('env_key = "MY_GW_KEY"');
+  });
+
+  it('Codex refuses a gateway key with no variable name to reference', async () => {
+    const configDir = join(dir.path, 'codex');
+    mkdirSync(configDir, { recursive: true });
+    const keyFile = join(dir.path, 'api_key');
+    writeFileSync(keyFile, 'the-actual-secret\n');
+    await expect(
+      applyAgent({
+        config: withGatewayAuth(`, auth: { api_key_file: ${keyFile} }`),
+        registry,
+        agent: createCodexIntegration({ configDir }),
+        skipInstalledCheck: true,
+      }),
+    ).rejects.toMatchObject({ code: 'AGENT_SECRET_UNSUPPORTED' });
+  });
+
+  it('Claude Code gets the literal value — its settings.json has no reference syntax', async () => {
+    const configDir = join(dir.path, 'claude');
+    mkdirSync(configDir, { recursive: true });
+    const result = await applyAgent({
+      config: withGatewayAuth(', auth: { api_key_env: MY_GW_KEY }'),
+      registry,
+      agent: createClaudeIntegration({ configDir }),
+      skipInstalledCheck: true,
+      env: { MY_GW_KEY: 'the-actual-secret' },
+    });
+    const written = JSON.parse(readFileSync(result.path, 'utf8')) as {
+      env: Record<string, string>;
+    };
+    expect(written.env.ANTHROPIC_API_KEY).toBe('the-actual-secret');
+  });
+
+  it('warns that the file carries the key in plaintext, with no previous version to back up', async () => {
+    const configDir = join(dir.path, 'claude');
+    mkdirSync(configDir, { recursive: true });
+    const result = await applyAgent({
+      config: withGatewayAuth(', auth: { api_key_env: MY_GW_KEY }'),
+      registry,
+      agent: createClaudeIntegration({ configDir }),
+      skipInstalledCheck: true,
+      env: { MY_GW_KEY: 'the-actual-secret' },
+    });
+    expect(result.backup).toBeNull();
+    expect(result.warnings.join(' ')).toContain('plaintext');
+  });
+
+  it('still backs up a previous version that carried the key, but warns about it', async () => {
+    // apply never skips the backup (§23) — but a `.bak` of a file that already
+    // held the gateway's key in plaintext is itself a plaintext copy of it, so
+    // the caller has to be told rather than finding out later.
+    const configDir = join(dir.path, 'claude');
+    mkdirSync(configDir, { recursive: true });
+    const settingsPath = join(configDir, 'settings.json');
+    writeFileSync(settingsPath, '{}');
+    const result = await applyAgent({
+      config: withGatewayAuth(', auth: { api_key_env: MY_GW_KEY }'),
+      registry,
+      agent: createClaudeIntegration({ configDir }),
+      skipInstalledCheck: true,
+      env: { MY_GW_KEY: 'the-actual-secret' },
+    });
+    expect(result.backup).toBeTruthy();
+    expect(readFileSync(result.backup as string, 'utf8')).toBe('{}');
+    expect(result.warnings.join(' ')).toContain('plaintext');
+    expect(result.warnings.join(' ')).toContain(result.backup as string);
+  });
+
+  it('OpenCode and Codex apply correctly even when this process cannot see the value itself', async () => {
+    // The Docker case: the gateway's own container has MY_GW_KEY, the machine
+    // running `apply` does not. A reference-capable format only needs the
+    // variable *name*, so this must not fail closed the way `lrd serve` would.
+    const opencodeDir = join(dir.path, 'opencode');
+    mkdirSync(opencodeDir, { recursive: true });
+    const opencodeResult = await applyAgent({
+      config: withGatewayAuth(', auth: { api_key_env: MY_GW_KEY }'),
+      registry,
+      agent: createOpenCodeIntegration({ configDir: opencodeDir }),
+      skipInstalledCheck: true,
+      env: {},
+    });
+    const opencodeWritten = JSON.parse(readFileSync(opencodeResult.path, 'utf8')) as {
+      provider: Record<string, { options: { apiKey: string } }>;
+    };
+    expect(opencodeWritten.provider['llm-runtime-dock']?.options.apiKey).toBe('{env:MY_GW_KEY}');
+
+    const codexDir = join(dir.path, 'codex');
+    mkdirSync(codexDir, { recursive: true });
+    const codexResult = await applyAgent({
+      config: withGatewayAuth(', auth: { api_key_env: MY_GW_KEY }'),
+      registry,
+      agent: createCodexIntegration({ configDir: codexDir }),
+      skipInstalledCheck: true,
+      env: {},
+    });
+    expect(readFileSync(codexResult.path, 'utf8')).toContain('env_key = "MY_GW_KEY"');
+  });
+
+  it('leaves every agent unchanged when no gateway key is configured', async () => {
+    const configDir = join(dir.path, 'opencode');
+    mkdirSync(configDir, { recursive: true });
+    const result = await applyAgent({
+      config: withGatewayAuth(''),
+      registry,
+      agent: createOpenCodeIntegration({ configDir }),
+      skipInstalledCheck: true,
+      env: {},
+    });
+    const written = JSON.parse(readFileSync(result.path, 'utf8')) as {
+      provider: Record<string, { options: Record<string, unknown> }>;
+    };
+    expect(written.provider['llm-runtime-dock']?.options.apiKey).toBeUndefined();
+  });
+});

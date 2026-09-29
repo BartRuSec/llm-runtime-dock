@@ -1,9 +1,11 @@
-import { startGateway } from '@llm-runtime-dock/gateway';
+import { isLoopbackAddress, startGateway } from '@llm-runtime-dock/gateway';
 import {
   createDebugTap,
   createDockService,
+  describeResolvedAuthSource,
   formatDuration,
   parseDuration,
+  resolveServerAuthKey,
   servedModelIds,
 } from '@llm-runtime-dock/core';
 import type { DebugTap } from '@llm-runtime-dock/core';
@@ -66,12 +68,26 @@ export const runServe = async (context: CliContext, options: ServeOptions = {}):
     ...(tap ? { tap } : {}),
   });
 
+  // Fail-closed on an explicit misconfiguration (§28): `server.auth` naming an
+  // env var or file that resolves to nothing must stop the gateway rather than
+  // silently start it open. A bare non-loopback bind with no key at all is only
+  // a warning, not a hard failure — see the log line below.
+  const apiKey = resolveServerAuthKey(config.server.auth, context.env);
+  const effectiveHost = options.host ?? config.server.host;
+  if (apiKey === undefined && !isLoopbackAddress(effectiveHost)) {
+    context.logger.warn(
+      `bound to ${effectiveHost} with no API key configured: every proxy route is reachable with no authentication`,
+      { event: 'gateway.unauthenticated_remote_bind' },
+    );
+  }
+
   const gateway = await startGateway({
     service,
     logger: context.logger,
-    host: options.host ?? config.server.host,
+    host: effectiveHost,
     port: options.port ?? config.server.port,
     ...(tap ? { tap } : {}),
+    ...(apiKey !== undefined ? { apiKey } : {}),
   });
 
   // Under --json stdout is the machine-readable surface, so this human report
@@ -81,7 +97,7 @@ export const runServe = async (context: CliContext, options: ServeOptions = {}):
     // One scheme for the whole block, the same one `status` prints: a styled
     // label, then a value styled by what it is. Prose lines and a bare-label
     // line mixed into this read as three different formats.
-    const labels = ['config', 'endpoint', 'models', 'idle'];
+    const labels = ['config', 'endpoint', 'auth', 'models', 'idle'];
     const width = labelWidth(labels);
     const line = (label: string, value: string): void =>
       context.out(keyValue(label, value, width, { label: theme.label }));
@@ -91,6 +107,12 @@ export const runServe = async (context: CliContext, options: ServeOptions = {}):
     const models = servedModelIds(config);
     line('config', theme.path(config.location.path));
     line('endpoint', theme.url(gateway.url));
+    line(
+      'auth',
+      apiKey === undefined || config.server.auth === undefined
+        ? theme.muted('none')
+        : `${theme.ok('required')} (${describeResolvedAuthSource(config.server.auth, context.env)})`,
+    );
     line(
       'models',
       models.length > 0 ? models.map((id) => theme.id(id)).join(', ') : theme.muted('(none)'),

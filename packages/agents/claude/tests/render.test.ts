@@ -8,7 +8,11 @@ import { createClaudeIntegration } from '../src/index.js';
 
 const agent = createClaudeIntegration({ configDir: join(tmpdir(), 'claude-test') });
 
-const plan = (existing: string | null, roles: Record<string, string> = {}): ApplyPlan => ({
+const plan = (
+  existing: string | null,
+  roles: Record<string, string> = {},
+  overrides: Partial<ApplyPlan> = {},
+): ApplyPlan => ({
   gatewayBaseUrl: 'http://127.0.0.1:8787',
   models: [
     {
@@ -23,6 +27,7 @@ const plan = (existing: string | null, roles: Record<string, string> = {}): Appl
   settings: {},
   existing,
   configPath: agent.configPath(),
+  ...overrides,
 });
 
 describe('claude code integration', () => {
@@ -71,6 +76,16 @@ describe('claude code integration', () => {
     const { content } = await agent.render(plan(existing));
     expect((JSON.parse(content) as { env: Record<string, string> }).env.ANTHROPIC_API_KEY).toBe(
       'user-set',
+    );
+  });
+
+  it('writes the gateway’s own key as a literal once configured, overriding a stale one', async () => {
+    // settings.json has no reference syntax (§28) — a literal is the only
+    // option, and it is always overwritten so a rotated key does not go stale.
+    const existing = JSON.stringify({ env: { ANTHROPIC_API_KEY: 'stale-value' } });
+    const { content } = await agent.render(plan(existing, {}, { gatewayApiKey: 'fresh-value' }));
+    expect((JSON.parse(content) as { env: Record<string, string> }).env.ANTHROPIC_API_KEY).toBe(
+      'fresh-value',
     );
   });
 

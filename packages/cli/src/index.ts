@@ -8,6 +8,7 @@ import { createTheme, resolveColor } from './theme.js';
 import type { CliContext } from './context.js';
 import { runApply } from './commands/apply.js';
 import { runDoctor } from './commands/doctor.js';
+import { runKeyGenerate } from './commands/key.js';
 import { runProbe } from './commands/probe.js';
 import { runServe } from './commands/serve.js';
 import { runLogs, runModels, runRuntimes, runStatus, runSwitch } from './commands/simple.js';
@@ -18,6 +19,7 @@ export * from './output.js';
 export * from './gateway-client.js';
 export { runApply } from './commands/apply.js';
 export { runDoctor } from './commands/doctor.js';
+export { runKeyGenerate } from './commands/key.js';
 export { runProbe } from './commands/probe.js';
 export { runServe } from './commands/serve.js';
 export { runLogs, runModels, runRuntimes, runStatus, runSwitch } from './commands/simple.js';
@@ -236,6 +238,24 @@ export const runCli = async (options: RunCliOptions): Promise<number> => {
     .action(async (_local: unknown, command: Command) => {
       exitCode = await runDoctor(contextFor(command));
     });
+
+  const key = program.command('key').description("manage the gateway's own inbound API key");
+  shared(key.command('generate'))
+    .description('generate a key and wire server.auth to it')
+    .option(
+      '--env [name]',
+      'write server.auth.api_key_env instead of a file (name defaults to LRD_API_KEY)',
+    )
+    .option('--force', 'replace an already-configured server.auth')
+    .option('--dry-run', 'print the result, write nothing')
+    .action(
+      async (
+        local: { env?: string | boolean; force?: boolean; dryRun?: boolean },
+        command: Command,
+      ) => {
+        await runKeyGenerate(contextFor(command), local);
+      },
+    );
 
   shared(program.command('models'), true)
     .description('show configured logical model ids')

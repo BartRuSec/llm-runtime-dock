@@ -294,10 +294,11 @@ Clients send the logical id and never see the backend model:
 
 On the gateway itself:
 
-| field           | meaning                                                            |
-| --------------- | ------------------------------------------------------------------ |
-| `host` / `port` | where `lrd` listens. Defaults to `127.0.0.1:8787`                  |
-| `idle_unload`   | unload the loaded model after this long with nothing to do (below) |
+| field           | meaning                                                                   |
+| --------------- | ------------------------------------------------------------------------- |
+| `host` / `port` | where `lrd` listens. Defaults to `127.0.0.1:8787`                         |
+| `idle_unload`   | unload the loaded model after this long with nothing to do (below)        |
+| `auth`          | require an API key of clients, as `api_key_env` or `api_key_file` (below) |
 
 On a runtime:
 
@@ -612,9 +613,11 @@ work because nothing rewrites them.
 Request bodies are touched in exactly one place: the `model` field, swapped from
 your logical id to the one the backend answers to. Not `tools`, not
 `tool_choice`, not `messages`. `GET /v1/models` returns your configured logical
-ids whether or not they are loaded, and your `Authorization` header goes
-upstream verbatim — a per-model `auth:` block fills in only when you sent none,
-and the gateway never generates a key.
+ids whether or not they are loaded, and — when the gateway itself requires no
+key — your `Authorization` header goes upstream verbatim; a per-model `auth:`
+block fills in only when you sent none. If `server.auth` is set (below), that
+header authenticates to the gateway instead and is not forwarded; the runtime's
+own `auth:` block is what reaches it, resolved server-side.
 
 The full surface, both protocols, response-header handling and `/switch`
 semantics are in [§14](docs/06-gateway-api.md#gateway-api).
@@ -678,9 +681,41 @@ the file it read.
 
 ## Security notes
 
-The gateway binds to `127.0.0.1` and has no authentication. `/status` and
-`/switch` are lifecycle controls: loopback-only, and refused outright when the
-gateway is bound to a non-loopback address.
+The gateway binds to `127.0.0.1` and requires no authentication by default.
+`/status` and `/switch` are lifecycle controls: loopback-only, refused outright
+when the gateway is bound to a non-loopback address, and that rule holds
+regardless of whether an API key is configured — a leaked key must not hand out
+remote process control on top of remote inference.
+
+**Requiring an API key.** Generate one and wire it into `server.auth`:
+
+```bash
+lrd key generate            # writes server.auth.api_key_file, plus a secret file next to the config
+lrd key generate --env      # prints the key once; writes server.auth.api_key_env: LRD_API_KEY instead
+```
+
+or set it by hand:
+
+```yaml
+server:
+  auth:
+    api_key_env: LRD_API_KEY # or: api_key_file: ~/.config/llm-runtime-dock/api_key
+```
+
+With no `server.auth` at all, the `LRD_API_KEY` environment variable is checked
+automatically — useful for a Docker or systemd deployment that already injects
+secrets that way, with no YAML edit needed. Once a key resolves, every route but
+`/health` requires it (`Authorization: Bearer <key>` or `x-api-key: <key>`);
+`lrd status`/`lrd switch` send it automatically, and `lrd apply` wires it into
+whichever agent you configure — Claude Code's `settings.json` gets the literal
+value (it has no reference syntax), OpenCode and Codex get an environment
+variable reference instead.
+
+An `api_key_env`/`api_key_file` that is set but resolves to nothing is a hard
+failure at `lrd serve`: an admin who configured a key source must never end up
+with a gateway that silently started unauthenticated. Binding to a non-loopback
+address with no key at all is only a warning, from `doctor` and the `serve`
+startup banner — not a hard stop.
 
 Lifecycle commands are **trusted configuration only**. Nothing derived from an
 HTTP request is ever interpolated into a command — a request selects which
@@ -706,8 +741,10 @@ metacharacter in it is live — quoting, globbing, redirection, command
 substitution. Use it only for a command you wrote yourself, and prefer the argv
 form, which cannot be reinterpreted.
 
-`lrd apply` never writes a credential into a coding agent's configuration, only
-an environment-variable reference.
+`lrd apply` never writes an _upstream_ credential into a coding agent's
+configuration, only an environment-variable reference — except the gateway's
+own key, which some agent formats (Claude Code) can only receive as a literal
+value, since that agent must present it to reach the gateway at all.
 
 The normative rules are in [§28](docs/01-overview.md#security).
 

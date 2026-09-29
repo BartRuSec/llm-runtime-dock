@@ -2,9 +2,12 @@ import type { DockConfig, RuntimeInstance, Surface } from '@llm-runtime-dock/cor
 import {
   configuredRoles,
   createProcessExecutor,
+  describeResolvedAuthSource,
   executableAvailable,
   isCliError,
+  resolveServerAuthKey,
 } from '@llm-runtime-dock/core';
+import { isLoopbackAddress } from '@llm-runtime-dock/gateway';
 import type { CliContext } from '../context.js';
 
 /**
@@ -38,6 +41,8 @@ export const runDoctor = async (context: CliContext): Promise<number> => {
   }
 
   findings.push({ level: 'ok', message: `configuration loaded from ${config.location.path}` });
+
+  findings.push(checkServerAuth(context, config));
 
   if (config.models.size === 0) {
     findings.push({
@@ -131,6 +136,34 @@ export const runDoctor = async (context: CliContext): Promise<number> => {
     }
   }
   return findings.some((finding) => finding.level === 'error') ? 1 : 0;
+};
+
+/**
+ * The gateway's own inbound key (§28) — a warning, not an error, when it is
+ * simply absent on a non-loopback bind: existing non-loopback deployments must
+ * not start failing `doctor` outright. An explicit `server.auth` that fails to
+ * resolve is a real misconfiguration and is reported as one.
+ */
+const checkServerAuth = (context: CliContext, config: DockConfig): Finding => {
+  let key: string | undefined;
+  try {
+    key = resolveServerAuthKey(config.server.auth, context.env);
+  } catch (error) {
+    return { level: 'error', message: (error as Error).message };
+  }
+  if (key === undefined) {
+    if (!isLoopbackAddress(config.server.host)) {
+      return {
+        level: 'warn',
+        message: `server.host is ${config.server.host} (non-loopback) with no API key configured — every proxy route is reachable with no authentication`,
+      };
+    }
+    return { level: 'ok', message: 'server: no API key configured (loopback bind)' };
+  }
+  const source = config.server.auth
+    ? describeResolvedAuthSource(config.server.auth, context.env)
+    : '';
+  return { level: 'ok', message: `server: API key required (source: ${source})` };
 };
 
 /**

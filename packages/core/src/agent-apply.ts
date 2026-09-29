@@ -11,7 +11,16 @@ import type { AdapterRegistry } from './registry.js';
  * Agent configuration files belong to the user. Every apply merges, preserves
  * every key it does not own, backs up first, and is idempotent. `--dry-run` and
  * the real write share this code path; only the last two lines differ.
+ *
+ * A file this apply is about to write — or that already carries — the
+ * gateway's own key in plaintext (§28: Claude Code always, OpenCode when the
+ * key has no variable name to reference) still gets backed up like any other
+ * file, but is flagged with a warning: the `.bak` is itself a plaintext copy
+ * of the secret, and the caller is told so rather than finding out later.
  */
+
+/** Matches `generateApiKey`'s own output — recognizable, not a generic secret scan. */
+const LRD_KEY_PATTERN = /lrd_[A-Za-z0-9_-]{20,}/;
 
 export interface ApplyAgentOptions {
   readonly config: DockConfig;
@@ -21,6 +30,8 @@ export interface ApplyAgentOptions {
   readonly dryRun?: boolean;
   /** Skip the installed check. Only for tests against a temp directory. */
   readonly skipInstalledCheck?: boolean;
+  /** Forwarded to `buildApplyPlan`. Defaults to `process.env`. */
+  readonly env?: NodeJS.ProcessEnv;
 }
 
 export interface ApplyAgentResult {
@@ -55,6 +66,7 @@ export const applyAgent = async (options: ApplyAgentOptions): Promise<ApplyAgent
     agent,
     overrides: options.overrides,
     existing,
+    env: options.env,
   });
 
   const rendered = await agent.render(plan);
@@ -87,7 +99,19 @@ export const applyAgent = async (options: ApplyAgentOptions): Promise<ApplyAgent
     };
   }
 
+  const embedsLiteralKey =
+    (plan.gatewayApiKey !== undefined && rendered.content.includes(plan.gatewayApiKey)) ||
+    (existing !== null && LRD_KEY_PATTERN.test(existing));
+
   const backup = backupFile(rendered.path);
+  const warnings = embedsLiteralKey
+    ? [
+        ...rendered.warnings,
+        backup
+          ? `backup at ${backup} carries the gateway's own API key in plaintext — delete it once you no longer need the previous version`
+          : `${rendered.path} carries the gateway's own API key in plaintext`,
+      ]
+    : rendered.warnings;
   writeTextFile(rendered.path, rendered.content);
   return {
     agent: agent.id,
@@ -96,7 +120,7 @@ export const applyAgent = async (options: ApplyAgentOptions): Promise<ApplyAgent
     backup,
     written: true,
     unchanged: false,
-    warnings: rendered.warnings,
+    warnings,
     roles: plan.roles,
   };
 };

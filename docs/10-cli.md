@@ -15,6 +15,7 @@ lrd status
 lrd probe [runtime]
 lrd apply <agent>
 lrd doctor
+lrd key generate
 lrd models
 lrd runtimes
 lrd switch <model>
@@ -67,9 +68,17 @@ one aligned block on stdout, in the same shape `status` uses:
 ```text
 config:   ~/.config/llm-runtime-dock/config.yaml
 endpoint: http://127.0.0.1:8787
+auth:     required (env LRD_API_KEY)
 models:   coding-quality, coding-fast
 idle:     1h then unload
 ```
+
+The `auth:` row says `none` when no key is configured (the default on a
+loopback bind), names its source (`required (file)` / `required (env NAME)`),
+and appends `, default` when it came from `LRD_API_KEY` rather than an
+explicit `server.auth` ([§28](01-overview.md#security)). A non-loopback bind
+with no key configured logs a warning here rather than refusing to start —
+`doctor` reports the same condition.
 
 The `idle:` row is there because that behaviour is on by default and frees a
 model without being asked. `off` when the window is zero.
@@ -142,6 +151,12 @@ gateway not running at http://127.0.0.1:8787
 ```
 
 Never a stack trace from a refused connection. `status` is what people run _because_ something looks wrong, so it has to behave well when everything is wrong.
+
+When the gateway requires an API key ([§28](01-overview.md#security)), `status`
+and `switch` send it themselves — resolved the same way `serve` resolves it,
+from `server.auth` or `LRD_API_KEY` — so a properly configured gateway needs no
+extra flag on either command. A 401 is reported with a hint pointing at
+`server.auth`/`LRD_API_KEY`, distinct from "gateway not running."
 
 #### `probe`
 
@@ -231,11 +246,48 @@ Asking needs a terminal on both ends. Under `--json`, in a pipeline or in CI
 there is nothing to ask, so the command fails with `CONFIG_INVALID` and the hint
 to add an `agents:` block — it never blocks on a prompt nobody can answer.
 
+Once a gateway key is configured ([§28](01-overview.md#security)), apply wires
+it into the one client-facing credential slot each agent format has,
+superseding the per-model upstream forwarding that slot otherwise carries:
+OpenCode and Codex get an environment-variable reference (`{env:VAR}` /
+`env_key`), Claude Code gets the resolved value written literally — its
+`settings.json` has no reference syntax. A key with no variable name (one
+generated into a file, `lrd key generate` with no `--env`) cannot be expressed
+as Codex's `env_key`; apply refuses with `AGENT_SECRET_UNSUPPORTED` and a hint
+to use `--env` instead.
+
+#### `key generate`
+
+Generate the gateway's own inbound API key ([§28](01-overview.md#security)) and
+wire `server.auth` to it, in place — the same merge-and-backup contract every
+other config-writing command follows.
+
+```bash
+lrd key generate                  # writes server.auth.api_key_file, plus a secret file next to the config
+lrd key generate --env            # prints the key, writes server.auth.api_key_env: LRD_API_KEY
+lrd key generate --env MY_VAR     # same, with a chosen variable name
+lrd key generate --force          # replace an already-configured server.auth
+lrd key generate --dry-run        # print the result, write nothing
+```
+
+The key is printed exactly once, on stdout — it is never written back to the
+YAML file and cannot be recovered afterward. `--env` mode never touches disk
+for the secret itself; the printed line (`export NAME=value` on Linux/macOS,
+`$env:NAME = "value"`/`set NAME=value` on Windows, chosen by the platform
+`lrd` runs on) is what a Docker, Compose or systemd deployment injects as its
+own environment instead.
+
+Refuses, without `--force`, to replace a `server.auth` that is already
+configured — the same `--force`-gates-replacement convention `probe --save`
+uses for configured models.
+
 #### `doctor`
 
 Validate:
 
 - config, and report which file was loaded;
+- `server.auth` ([§28](01-overview.md#security)): an explicit source that fails
+  to resolve is an error; a non-loopback bind with no key at all is a warning;
 - adapters;
 - executable availability;
 - runtime configuration;

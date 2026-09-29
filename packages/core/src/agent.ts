@@ -1,6 +1,7 @@
 import type { DockConfig } from './config/load.js';
 import { cliError } from './errors.js';
 import type { AdapterRegistry } from './registry.js';
+import { resolveServerAuthKey } from './server-auth.js';
 import type { Surface } from './types.js';
 
 /**
@@ -28,6 +29,21 @@ export interface AgentModelPlan {
 export interface ApplyPlan {
   /** e.g. `http://127.0.0.1:8787`. Agents append their own path convention. */
   readonly gatewayBaseUrl: string;
+  /**
+   * The gateway's own inbound credential (§28), when one is configured. This is
+   * what an agent must present to reach the gateway at all — a different
+   * concern from `AgentModelPlan.apiKeyEnv`, which is a per-model *upstream*
+   * credential the gateway forwards. Once this is set, it claims the one
+   * client-facing credential slot each agent format has; the upstream
+   * pass-through no longer reaches the runtime through the agent (the gateway
+   * strips and re-injects it server-side instead — see `apps/gateway`).
+   */
+  readonly gatewayApiKeyEnv?: string;
+  /**
+   * The literal resolved value, needed unconditionally by a format with no
+   * reference syntax (Claude Code's `settings.json`). Never logged.
+   */
+  readonly gatewayApiKey?: string;
   readonly models: readonly AgentModelPlan[];
   /** Role → logical model id, already merged with any CLI overrides. */
   readonly roles: Readonly<Record<string, string>>;
@@ -147,6 +163,8 @@ export interface BuildApplyPlanOptions {
   /** Role overrides for one run, e.g. `--opus coding-fast`. */
   readonly overrides?: Readonly<Record<string, string>>;
   readonly existing: string | null;
+  /** Defaults to `process.env`. Injected so tests can set `LRD_API_KEY` without mutating it. */
+  readonly env?: NodeJS.ProcessEnv;
 }
 
 /**
@@ -260,8 +278,29 @@ export const buildApplyPlan = async (options: BuildApplyPlanOptions): Promise<Ap
     });
   }
 
+  // The gateway's own inbound key (§28), when one is configured — a different
+  // hop than the per-model `apiKeyEnv` above. The env var *name* is a config
+  // fact, not a secret, so it is always available without touching the
+  // environment — that is what lets a format that can reference a variable
+  // (OpenCode, Codex) apply correctly even when this process cannot itself see
+  // the value, e.g. a Docker deployment that injects it into the gateway's own
+  // container only. The literal is resolved — and, for an explicit
+  // `server.auth`, fail-closed exactly as `lrd serve` is — only when this
+  // agent actually needs it: it has no reference syntax at all (Claude Code),
+  // or the key has no variable name to reference (`api_key_file`).
+  const auth = config.server.auth;
+  const gatewayApiKeyEnv = auth?.apiKeyEnv;
+  const gatewayApiKey =
+    auth === undefined
+      ? undefined
+      : gatewayApiKeyEnv !== undefined && agent.supportsSecretReference
+        ? undefined
+        : resolveServerAuthKey(auth, options.env ?? process.env);
+
   return {
     gatewayBaseUrl: `http://${config.server.host}:${config.server.port}`,
+    gatewayApiKeyEnv,
+    gatewayApiKey,
     models,
     roles,
     settings: configuredSettings(config, agent.id),

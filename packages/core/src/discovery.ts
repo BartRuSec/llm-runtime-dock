@@ -614,8 +614,8 @@ const writesRuntimeEntry = (outcome: AdapterProbeOutcome): boolean => {
   return outcome.result.status !== 'not_installed' && outcome.result.status !== 'foreign_server';
 };
 
-/** Get a top-level mapping, creating it when the file has none. */
-const requireMap = (doc: Document, path: string, key: string): YAMLMap => {
+/** Get a top-level mapping, creating it when the file has none. Shared with `server-auth.ts`. */
+export const requireMap = (doc: Document, path: string, key: string): YAMLMap => {
   let node = doc.get(key);
   if (!isMap(node)) {
     doc.set(key, doc.createNode({}));
@@ -815,7 +815,8 @@ export const renderDiscoveredModels = (
   return { yaml: stringify({ runtimes, models }, { lineWidth: 0 }).trimEnd(), ids, collisions };
 };
 
-const newConfigDocument = (server: { host: string; port: number } | undefined): Document => {
+/** Bootstrap an empty config document. Shared with `server-auth.ts`'s `lrd key generate`. */
+export const newConfigDocument = (server: { host: string; port: number } | undefined): Document => {
   const doc = new Document({
     server: { host: server?.host ?? '127.0.0.1', port: server?.port ?? 8787 },
     runtimes: {},

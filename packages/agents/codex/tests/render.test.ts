@@ -75,6 +75,32 @@ base_url = "http://127.0.0.1:9999/v1"
     expect(content).not.toContain('secret');
   });
 
+  it('writes env_key from the gateway’s own key, ahead of a model’s upstream credential', async () => {
+    const { content } = await agent.render(
+      plan(null, {
+        gatewayApiKeyEnv: 'LRD_API_KEY',
+        gatewayApiKey: 'resolved-value',
+        models: [
+          {
+            id: 'coding-quality',
+            name: 'Qwen3.8-27B',
+            contextLimit: undefined,
+            outputLimit: undefined,
+            apiKeyEnv: 'UPSTREAM_KEY',
+          },
+        ],
+      }),
+    );
+    expect(content).toContain('env_key = "LRD_API_KEY"');
+    expect(content).not.toContain('UPSTREAM_KEY');
+  });
+
+  it('refuses a gateway key with no variable name — env_key cannot hold a literal', async () => {
+    await expect(
+      agent.render(plan(null, { gatewayApiKeyEnv: undefined, gatewayApiKey: 'resolved-value' })),
+    ).rejects.toMatchObject({ code: 'AGENT_SECRET_UNSUPPORTED' });
+  });
+
   it('keeps keys the user added to the gateway’s own provider table', async () => {
     const existing = `[model_providers.llm-runtime-dock]
 name = "llm-runtime-dock"

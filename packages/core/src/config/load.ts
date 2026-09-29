@@ -4,6 +4,7 @@ import type * as z from 'zod';
 import type { AdapterRegistry } from '../registry.js';
 import { cliError } from '../errors.js';
 import type { CliError } from '../errors.js';
+import { toServerAuthConfig, type ServerAuthConfig } from '../server-auth.js';
 import type { AuthConfig, ModelRelease, RuntimeInstance } from '../types.js';
 import { checkExtraArgs, checkOptionKeys } from './reserved.js';
 import type { ConfigLocation } from './paths.js';
@@ -49,6 +50,8 @@ export interface ServerSettings {
   readonly port: number;
   /** How long the gateway may sit idle before it releases the occupant. 0 = never (§29). */
   readonly idleUnloadMs: number;
+  /** The gateway's own inbound credential (§28), resolved from config or `LRD_API_KEY`. */
+  readonly auth: ServerAuthConfig | undefined;
 }
 
 export interface DockConfig {
@@ -88,7 +91,7 @@ export const loadConfig = (
   const location = resolveConfigLocation(options);
   const contents = options.contents ?? readConfigFile(location);
   const raw = parseAndValidate(contents, location);
-  return buildConfig(raw, location, registry);
+  return buildConfig(raw, location, registry, options.env ?? process.env);
 };
 
 /** Parse and validate an already-loaded YAML string. */
@@ -96,8 +99,9 @@ export const parseConfig = (
   registry: AdapterRegistry,
   contents: string,
   location: ConfigLocation,
+  env: NodeJS.ProcessEnv = process.env,
 ): DockConfig => {
-  return buildConfig(parseAndValidate(contents, location), location, registry);
+  return buildConfig(parseAndValidate(contents, location), location, registry, env);
 };
 
 const readConfigFile = (location: ConfigLocation): string => {
@@ -190,6 +194,7 @@ const buildConfig = (
   raw: RawConfig,
   location: ConfigLocation,
   registry: AdapterRegistry,
+  env: NodeJS.ProcessEnv,
 ): DockConfig => {
   // Resolve the declared runtimes first: a model entry is meaningless until the
   // server it names exists, and the adapter comes from the runtime now.
@@ -280,6 +285,7 @@ const buildConfig = (
       raw.server.idle_unload === undefined
         ? DEFAULT_IDLE_UNLOAD_MS
         : parseDuration(raw.server.idle_unload, 'server.idle_unload'),
+    auth: toServerAuthConfig(raw.server.auth, env),
   };
 
   return { location, server, runtimes, models, agents: raw.agents, raw };
