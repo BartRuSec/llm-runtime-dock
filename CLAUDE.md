@@ -387,10 +387,22 @@ start` reads its port back, `omlx start` cannot — it takes none — so oMLX
   `content-length`/`content-encoding` are dropped and everything else passes;
   an allowlist silently swallowed `retry-after`. The upstream's `x-request-id`
   survives as `x-upstream-request-id`, because the gateway stamps its own.
+- **Token counting reads what the upstream said and adds nothing.** `createUsageTap`
+  is a `RequestTap` like the debug one, always on, fanned out with it by
+  `fanoutTap` because `proxyRequest` has one tap slot. Injecting
+  `stream_options.include_usage` would make OpenAI streams countable, and would
+  also break the only-`model`-is-rewritten guarantee and hand the client a chunk
+  it did not ask for — so a stream without usage lands in `noUsage`,
+  never an estimate. Anthropic figures are cumulative: the
+  largest wins, not a sum and not the last (a runtime may open `message_start`
+  at zero). Anthropic reports cache hits _beside_ `input_tokens` — mtplx answers
+  a repeated prompt with `input_tokens: 0` and everything under
+  `cache_read_input_tokens` — so `input` adds them; OpenAI's `prompt_tokens`
+  already contains them and must not be added to again.
 - **`lrd serve --debug` is the instrument, and it is a tee.** `RequestTap` may
   never alter a byte, and it captures both hops — assuming the client-side relay
   is 1:1 would defeat the point of measuring it.
-- **`/status` and `/switch` are loopback-only** and answer a plain 403 refusal,
+- **`/status`, `/usage` and `/switch` are loopback-only** and answer a plain 403 refusal,
   not a gateway error code.
 
 ## Error namespaces

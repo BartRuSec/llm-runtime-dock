@@ -11,7 +11,14 @@ import { runDoctor } from './commands/doctor.js';
 import { runKeyGenerate } from './commands/key.js';
 import { runProbe } from './commands/probe.js';
 import { runServe } from './commands/serve.js';
-import { runLogs, runModels, runRuntimes, runStatus, runSwitch } from './commands/simple.js';
+import {
+  runLogs,
+  runModels,
+  runRuntimes,
+  runStatus,
+  runSwitch,
+  runUsage,
+} from './commands/simple.js';
 
 export * from './context.js';
 export * from './theme.js';
@@ -22,7 +29,14 @@ export { runDoctor } from './commands/doctor.js';
 export { runKeyGenerate } from './commands/key.js';
 export { runProbe } from './commands/probe.js';
 export { runServe } from './commands/serve.js';
-export { runLogs, runModels, runRuntimes, runStatus, runSwitch } from './commands/simple.js';
+export {
+  runLogs,
+  runModels,
+  runRuntimes,
+  runStatus,
+  runSwitch,
+  runUsage,
+} from './commands/simple.js';
 
 /**
  * `lrd` (spec §27).
@@ -172,6 +186,12 @@ export const runCli = async (options: RunCliOptions): Promise<number> => {
     .description('ask a running gateway what it is doing')
     .action(async (_local: unknown, command: Command) => {
       await runStatus(contextFor(command));
+    });
+
+  shared(program.command('usage'), true)
+    .description('report tokens served per model since the gateway started')
+    .action(async (_local: unknown, command: Command) => {
+      await runUsage(contextFor(command));
     });
 
   shared(program.command('probe'))

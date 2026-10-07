@@ -558,6 +558,7 @@ An entry can only fill an Anthropic role if its runtime serves that surface.
 ```text
 lrd serve                     start the gateway
 lrd status                    what a running gateway is doing
+lrd usage                     tokens served per model since it started
 lrd probe [runtime]           ask the backends what they serve
 lrd apply <agent> | --all     write the gateway into an agent's config
 lrd doctor                    validate config, adapters, executables, roles
@@ -575,7 +576,7 @@ Output is coloured only when `lrd` owns the terminal: `--no-color`, `NO_COLOR`,
 turns it back on where there is no terminal to detect. The colour is decoration
 only — strip the escapes and the bytes match the uncoloured run.
 
-`status` and `switch` are HTTP clients of a running gateway. With no gateway they
+`status`, `usage` and `switch` are HTTP clients of a running gateway. With no gateway they
 say so plainly and exit non-zero — never a stack trace:
 
 ```text
@@ -602,6 +603,7 @@ POST /v1/chat/completions
 POST /v1/messages
 POST /v1/messages/count_tokens
 GET  /status                  loopback only
+GET  /usage                   loopback only
 POST /switch                  loopback only
 ```
 
@@ -682,7 +684,7 @@ the file it read.
 ## Security notes
 
 The gateway binds to `127.0.0.1` and requires no authentication by default.
-`/status` and `/switch` are lifecycle controls: loopback-only, refused outright
+`/status`, `/usage` and `/switch` are local endpoints: loopback-only, refused outright
 when the gateway is bound to a non-loopback address, and that rule holds
 regardless of whether an API key is configured — a leaked key must not hand out
 remote process control on top of remote inference.
