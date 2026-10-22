@@ -1,11 +1,11 @@
 import { cliError } from '@llm-runtime-dock/core';
 import type { CliError } from '@llm-runtime-dock/core';
-import type { GatewayStatus } from '@llm-runtime-dock/core';
+import type { GatewayStatus, UsageSnapshot } from '@llm-runtime-dock/core';
 
 /**
  * HTTP client for a running gateway (spec §27).
  *
- * `status` and `switch` are what people run *because* something looks wrong, so
+ * `status`, `usage` and `switch` are what people run *because* something looks wrong, so
  * a refused connection must read as "gateway not running", never as a stack
  * trace. `GATEWAY_NOT_RUNNING` is a CLI-namespace code by definition: a gateway
  * that is not running cannot answer with an HTTP error.
@@ -69,6 +69,10 @@ const request = async (
 
 export const fetchStatus = async (endpoint: string, apiKey?: string): Promise<GatewayStatus> => {
   return (await request(endpoint, '/status', { method: 'GET' }, apiKey)) as GatewayStatus;
+};
+
+export const fetchUsage = async (endpoint: string, apiKey?: string): Promise<UsageSnapshot> => {
+  return (await request(endpoint, '/usage', { method: 'GET' }, apiKey)) as UsageSnapshot;
 };
 
 export const requestSwitch = async (

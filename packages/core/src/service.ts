@@ -9,6 +9,8 @@ import { listLogicalModels, resolveModel, servedModelIds } from './resolution.js
 import type { Scheduler, SchedulerStatus } from './scheduler.js';
 import { createScheduler } from './scheduler.js';
 import type { RuntimeInstance } from './types.js';
+import type { UsageSnapshot } from './usage-tap.js';
+import { createUsageTap, fanoutTap } from './usage-tap.js';
 
 /**
  * Application layer shared by the gateway and the CLI (spec §27).
@@ -47,6 +49,8 @@ export interface DockService {
   listModels(): ReturnType<typeof listLogicalModels>;
   resolve(clientModelId: unknown): RuntimeInstance;
   status(): GatewayStatus;
+  /** `GET /usage`: tokens the upstreams reported, per logical entry, since this gateway started. */
+  usage(): UsageSnapshot;
   /**
    * Resolve, make resident, and proxy. The lease is held for the whole request,
    * including its stream, so a switch cannot cut it off (§8).
@@ -76,6 +80,11 @@ export const createDockService = (options: DockServiceOptions): DockService => {
     ...(options.idleUnloadMs !== undefined ? { idleUnloadMs: options.idleUnloadMs } : {}),
   });
 
+  // Always on, unlike the debug capture: it keeps counters, not bodies, and the
+  // fan-out lets `--debug` ride alongside it in the proxy's single tap slot.
+  const usageTap = createUsageTap();
+  const proxyTap: RequestTap = options.tap ? fanoutTap(usageTap, options.tap) : usageTap;
+
   const resolve = (clientModelId: unknown): RuntimeInstance => resolveModel(config, clientModelId);
 
   const status = (): GatewayStatus => ({
@@ -86,6 +95,8 @@ export const createDockService = (options: DockServiceOptions): DockService => {
     // disabled one is recorded and unroutable (§12).
     models: servedModelIds(config),
   });
+
+  const usage = (): UsageSnapshot => usageTap.snapshot();
 
   const proxy = async (input: {
     path: UpstreamPath;
@@ -133,7 +144,7 @@ export const createDockService = (options: DockServiceOptions): DockService => {
       logger: log,
       fetchImpl,
       onUpstreamFailure: (reason) => scheduler.reportUpstreamFailure(instance.id, reason),
-      ...(options.tap ? { tap: options.tap } : {}),
+      tap: proxyTap,
     });
   };
 
@@ -155,6 +166,7 @@ export const createDockService = (options: DockServiceOptions): DockService => {
     listModels: () => listLogicalModels(config),
     resolve,
     status,
+    usage,
     proxy,
     switchTo,
     shutdown: () => scheduler.shutdown(),

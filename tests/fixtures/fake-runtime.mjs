@@ -117,17 +117,33 @@ function statusPayload() {
   };
 }
 
-function streamCompletion(res, model, anthropic) {
+// Like a real server: OpenAI streams carry `usage` only when the client asked
+// with `stream_options.include_usage`; Anthropic streams always report it.
+function streamCompletion(res, model, anthropic, includeUsage) {
   res.writeHead(200, {
     'content-type': 'text/event-stream',
     'cache-control': 'no-cache',
     connection: 'keep-alive',
   });
+  if (anthropic) {
+    res.write(
+      `event: message_start\ndata: ${JSON.stringify({
+        type: 'message_start',
+        message: { id: 'msg_fake', usage: { input_tokens: 5, output_tokens: 1 } },
+      })}\n\n`,
+    );
+  }
   let index = 0;
   const tick = () => {
     if (res.writableEnded) return;
     if (index >= STREAM_CHUNKS) {
       if (anthropic) {
+        res.write(
+          `event: message_delta\ndata: ${JSON.stringify({
+            type: 'message_delta',
+            usage: { output_tokens: 7 },
+          })}\n\n`,
+        );
         res.write(`event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
       } else {
         res.write(
@@ -138,6 +154,17 @@ function streamCompletion(res, model, anthropic) {
             choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
           })}\n\n`,
         );
+        if (includeUsage) {
+          res.write(
+            `data: ${JSON.stringify({
+              id: 'chatcmpl-fake',
+              object: 'chat.completion.chunk',
+              model,
+              choices: [],
+              usage: { prompt_tokens: 5, completion_tokens: 7, total_tokens: 12 },
+            })}\n\n`,
+          );
+        }
         res.write('data: [DONE]\n\n');
       }
       res.end();
@@ -359,7 +386,7 @@ const server = createServer((req, res) => {
         return;
       }
       if (body.stream === true) {
-        streamCompletion(res, model, anthropicPath);
+        streamCompletion(res, model, anthropicPath, body.stream_options?.include_usage === true);
         return;
       }
       if (anthropicPath) {

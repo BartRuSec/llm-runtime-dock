@@ -120,8 +120,8 @@ const handle = async (
     return;
   }
 
-  if (path === '/status' || path === '/switch') {
-    // Lifecycle controls bind to loopback only (§28). Two checks: the gateway
+  if (path === '/status' || path === '/usage' || path === '/switch') {
+    // Lifecycle controls and the usage report bind to loopback only (§28). Two checks: the gateway
     // must itself be bound to a loopback address, and the peer must be local.
     // A refusal is answered directly rather than through the gateway error
     // namespace: none of those codes means "forbidden", and reusing one would
@@ -133,6 +133,10 @@ const handle = async (
     }
     if (method === 'GET' && path === '/status') {
       sendJson(res, 200, service.status());
+      return;
+    }
+    if (method === 'GET' && path === '/usage') {
+      sendJson(res, 200, service.usage());
       return;
     }
     if (method === 'POST' && path === '/switch') {
@@ -290,8 +294,8 @@ const loopbackRefusal = (
   });
   if (!isLoopbackAddress(bindHost)) {
     return refuse(
-      `${path} is a lifecycle control and is refused while the gateway is bound to ${bindHost}. ` +
-        'Bind to 127.0.0.1: an API key (§28) does not lift this — lifecycle control stays loopback-only.',
+      `${path} is loopback-only and is refused while the gateway is bound to ${bindHost}. ` +
+        'Bind to 127.0.0.1: an API key (§28) does not lift this — local endpoints stay loopback-only.',
     );
   }
   if (!isLoopbackAddress(req.socket.remoteAddress ?? undefined)) {

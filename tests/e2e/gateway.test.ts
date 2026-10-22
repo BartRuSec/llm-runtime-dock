@@ -280,10 +280,12 @@ describe('loopback-only lifecycle controls', () => {
     };
   };
 
-  it('serves /status and /switch on a loopback bind', async () => {
+  it('serves /status, /usage and /switch on a loopback bind', async () => {
     const gateway = await serve('127.0.0.1');
     try {
       expect((await fetch(`${gateway.url}/status`)).status).toBe(200);
+      expect((await fetch(`${gateway.url}/usage`)).status).toBe(200);
+      expect((await fetch(`${gateway.url}/usage`, { method: 'POST' })).status).toBe(405);
     } finally {
       await gateway.close();
     }
@@ -294,6 +296,7 @@ describe('loopback-only lifecycle controls', () => {
     try {
       const status = await fetch(`${gateway.url}/status`);
       expect(status.status).toBe(403);
+      expect((await fetch(`${gateway.url}/usage`)).status).toBe(403);
       const body = (await status.json()) as { error: { code: string; message: string } };
       expect(body.error.code).toBe('loopback_only');
       expect(body.error.message).toContain('0.0.0.0');

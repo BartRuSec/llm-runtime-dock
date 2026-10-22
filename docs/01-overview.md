@@ -138,9 +138,9 @@ host: 127.0.0.1
 
 No authentication is required for a loopback bind unless `server.auth` is set, or the `LRD_API_KEY` environment variable happens to be, out of the box.
 
-The gateway can require an API key of its own clients (`server.auth`, [§12](05-configuration.md#configuration), enforced in [§14](06-gateway-api.md#gateway-api)) — a separate concern from the per-runtime `auth:` block, which is a credential LRD sends _upstream_. When a key is configured it is required on every route except `/health`, including `/v1/models` and the lifecycle controls. It does not replace the rule below: a valid key never lifts the loopback-only restriction on `/status`/`/switch`, since a leaked key must not hand out remote process control on top of remote inference.
+The gateway can require an API key of its own clients (`server.auth`, [§12](05-configuration.md#configuration), enforced in [§14](06-gateway-api.md#gateway-api)) — a separate concern from the per-runtime `auth:` block, which is a credential LRD sends _upstream_. When a key is configured it is required on every route except `/health`, including `/v1/models` and the lifecycle controls. It does not replace the rule below: a valid key never lifts the loopback-only restriction on `/status`/`/usage`/`/switch`, since a leaked key must not hand out remote process control on top of remote inference.
 
-`/status` and `/switch` ([§14](06-gateway-api.md#gateway-api)) are lifecycle controls. They bind to loopback only, and are refused outright when the gateway is bound to a non-loopback address, whether or not an API key is configured.
+`/status`, `/usage` and `/switch` ([§14](06-gateway-api.md#gateway-api)) are lifecycle controls and a usage report. They bind to loopback only, and are refused outright when the gateway is bound to a non-loopback address, whether or not an API key is configured.
 
 Applying configuration to a coding agent writes into files the user owns. It merges rather than replaces, backs up first, and never writes a credential value except where the format has no alternative — an agent whose configuration format can only hold a literal string (Claude Code's `settings.json`) receives the gateway's own resolved key that way, since the whole reason the key exists is for that agent to present it back; every format that can reference a value by environment variable does that instead ([§23](08-agents.md#agent-integrations)).
 
@@ -151,7 +151,7 @@ Never:
 - execute arbitrary commands supplied through HTTP;
 - concatenate request values into shell commands;
 - expose lifecycle controls publicly by default;
-- serve `/status` or `/switch` on a non-loopback bind, API key or not;
+- serve `/status`, `/usage` or `/switch` on a non-loopback bind, API key or not;
 - log secrets;
 - put API keys/passwords into example configs;
 - inline a resolved secret into a coding agent's configuration, except where the format has no way to reference one instead.

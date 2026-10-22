@@ -1,7 +1,7 @@
 # Gateway API
 
 The HTTP surface: two client-facing protocols, both proxied rather than
-translated, plus the two loopback-only lifecycle controls.
+translated, plus the loopback-only lifecycle controls and usage report.
 
 ---
 
@@ -24,10 +24,11 @@ POST /v1/messages
 POST /v1/messages/count_tokens
 ```
 
-Plus two gateway-native endpoints, belonging to neither:
+Plus three gateway-native endpoints, belonging to neither:
 
 ```http
 GET  /status
+GET  /usage
 POST /switch
 ```
 
@@ -87,6 +88,8 @@ below. The two checks are independent, and both must pass.
 #### `/status` and `/switch`
 
 `GET /status` reports what the gateway is doing: whether it is running, which entry holds the resident slot, that entry's adapter, backend model, ownership and release mechanism, its state, and the queue depth. `lastRelease` carries the previous occupant, how it was freed, and **why** — `switch`, `idle` or `shutdown` ([§26](03-lifecycle.md#observability), [§29](03-lifecycle.md#memory--resource-policy)) — which is what lets a caller tell an empty slot that has never been filled apart from one an idle window emptied. It is the source of truth for `lrd status` ([§27](10-cli.md#cli)).
+
+`GET /usage` is the statistics report, kept apart from `/status` because one is state and the other is a running tally. It carries, per logical entry, the `requests` answered and the `input` and `output` tokens the **upstream reported** (`input` includes prompt-cache hits, which `cached` breaks out), and `since`, when counting began, as `{ since, models: { <id>: { requests, input, output, cached, noUsage, failed } } }`. It is a passive observer on the same tap mechanism as `--debug`, always on, and it reads the `usage` objects (OpenAI `prompt_tokens`/`completion_tokens`; Anthropic `input_tokens` plus `cache_read_input_tokens` and `cache_creation_input_tokens`, which it reports beside it — a prefix-cache hit is `input_tokens: 0` with the whole prompt under `cache_read_input_tokens` — from `message_start` and `message_delta`, where every figure is cumulative so the largest seen counts) without altering a byte. Three consequences follow from that. The gateway does not inject `stream_options`, so an OpenAI stream whose client did not ask for `include_usage` reports nothing, and is counted in `noUsage` rather than estimated. A cancelled, errored or non-2xx request is counted in `failed` and adds no tokens, because its totals are partial. `messages/count_tokens` generates nothing and is not counted. The counters live in memory and reset when the gateway restarts. Like `/status` it is loopback-only ([§28](01-overview.md#security)). It is the source of truth for `lrd usage` ([§27](10-cli.md#cli)); the counters are current usage, not history.
 
 `POST /switch` takes a logical model id and makes it resident.
 
