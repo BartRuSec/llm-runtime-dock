@@ -152,11 +152,26 @@ gateway not running at http://127.0.0.1:8787
 
 Never a stack trace from a refused connection. `status` is what people run _because_ something looks wrong, so it has to behave well when everything is wrong.
 
-When the gateway requires an API key ([§28](01-overview.md#security)), `status`
-and `switch` send it themselves — resolved the same way `serve` resolves it,
+When the gateway requires an API key ([§28](01-overview.md#security)), `status`,
+`usage` and `switch` send it themselves — resolved the same way `serve` resolves it,
 from `server.auth` or `LRD_API_KEY` — so a properly configured gateway needs no
 extra flag on either command. A 401 is reported with a hint pointing at
 `server.auth`/`LRD_API_KEY`, distinct from "gateway not running."
+
+#### `usage`
+
+Report what the gateway has served, via `GET /usage` ([§14](06-gateway-api.md#gateway-api)). It is a separate command from `status` on purpose: `status` is state, `usage` is a tally.
+
+```text
+since: 2026-10-07T08:00:00.000Z
+
+model           requests  input  output
+coding-quality  12        48210  9320
+```
+
+One row per entry that has answered something, counted since the gateway started — current usage, not history; a restart resets it, and `since` says when counting began. `input` counts every prompt token served, so `cached` is the part of it a prompt cache answered. The `cached`, `no usage` and `failed` columns appear only when some row has a non-zero count, and a `total` row when more than one model is listed. With nothing answered yet it says so. `--json` prints the endpoint's body unchanged: `{ since, models: { <id>: { requests, input, output, cached, noUsage, failed } } }`.
+
+Like `status`, it needs a running gateway on loopback, sends the API key itself, and says plainly when none answers.
 
 #### `probe`
 
@@ -319,4 +334,4 @@ Show or follow runtime process logs where available.
 
 #### Shared code
 
-The CLI is a client, not a second implementation. `serve`, `doctor` and `probe` call the same core services the gateway uses; `status` and `switch` are HTTP clients of a running gateway. No orchestration logic lives in command handlers.
+The CLI is a client, not a second implementation. `serve`, `doctor` and `probe` call the same core services the gateway uses; `status`, `usage` and `switch` are HTTP clients of a running gateway. No orchestration logic lives in command handlers.

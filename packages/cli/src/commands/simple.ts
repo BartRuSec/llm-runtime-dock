@@ -1,7 +1,7 @@
-import type { DockConfig, GatewayStatus } from '@llm-runtime-dock/core';
+import type { DockConfig, GatewayStatus, ModelUsage, UsageSnapshot } from '@llm-runtime-dock/core';
 import { cliError } from '@llm-runtime-dock/core';
 import type { CliContext } from '../context.js';
-import { fetchStatus, requestSwitch } from '../gateway-client.js';
+import { fetchStatus, fetchUsage, requestSwitch } from '../gateway-client.js';
 import { columns, keyValue, labelWidth } from '../output.js';
 
 /** The read-only and gateway-client commands (spec §27). */
@@ -17,6 +17,73 @@ export const runStatus = async (context: CliContext): Promise<void> => {
     return;
   }
   printStatus(context, endpoint, status);
+};
+
+/** `lrd usage` — tokens served per model since the gateway started, via `GET /usage`. */
+export const runUsage = async (context: CliContext): Promise<void> => {
+  const config = tryLoadConfig(context);
+  const endpoint = context.gatewayEndpoint(config ?? undefined);
+  const usage = await fetchUsage(endpoint, context.resolveServerApiKey(config ?? undefined));
+
+  if (context.options.json) {
+    context.json(usage);
+    return;
+  }
+  printUsage(context, usage);
+};
+
+/**
+ * What the upstreams reported, never an estimate. A table of its own rather than
+ * `label: value` rows: there is one line per model, and the model id is the row
+ * key instead of being repeated. Optional columns appear only when some row has
+ * a non-zero count, and `total` only when there is more than one row to add up.
+ */
+const printUsage = (context: CliContext, usage: UsageSnapshot): void => {
+  const theme = context.theme;
+  context.out(keyValue('since', usage.since, labelWidth(['since']), { label: theme.label }));
+  const used = Object.entries(usage.models);
+  if (used.length === 0) {
+    context.out(theme.muted('no requests answered yet'));
+    return;
+  }
+  const sum = (pick: (entry: ModelUsage) => number): number =>
+    used.reduce((total, [, entry]) => total + pick(entry), 0);
+  const cached = sum((entry) => entry.cached) > 0;
+  const unreported = sum((entry) => entry.noUsage) > 0;
+  const failed = sum((entry) => entry.failed) > 0;
+  const headers = [
+    'model',
+    'requests',
+    'input',
+    'output',
+    ...(cached ? ['cached'] : []),
+    ...(unreported ? ['no usage'] : []),
+    ...(failed ? ['failed'] : []),
+  ];
+  const row = (id: string, entry: ModelUsage): string[] => [
+    id,
+    String(entry.requests),
+    String(entry.input),
+    String(entry.output),
+    ...(cached ? [String(entry.cached)] : []),
+    ...(unreported ? [String(entry.noUsage)] : []),
+    ...(failed ? [String(entry.failed)] : []),
+  ];
+  const rows = used.map(([id, entry]) => row(id, entry));
+  if (used.length > 1) {
+    rows.push(
+      row('total', {
+        requests: sum((entry) => entry.requests),
+        input: sum((entry) => entry.input),
+        output: sum((entry) => entry.output),
+        cached: sum((entry) => entry.cached),
+        noUsage: sum((entry) => entry.noUsage),
+        failed: sum((entry) => entry.failed),
+      }),
+    );
+  }
+  context.out('');
+  for (const line of columns(headers, rows, [theme.id], theme.label)) context.out(line);
 };
 
 /** `lrd switch <model>` — through `POST /switch`, which goes via the scheduler. */
